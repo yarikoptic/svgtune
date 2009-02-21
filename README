@@ -31,6 +31,36 @@ g id=g14546 style=display:inline
 
 
 For the results, look under somefigure_tuned/ directory.  You might make
-advantage of having following in your Makefile:
+advantage of having following in your Makefile, so you get automatic
+'tuning' and rendering of 'pdf' and 'eps' of your .svg's for easy
+embedding them into your publications.
 
+all:: pics
+
+# For every .svg we must have a pdf
+PICS=$(shell find . -iname \*svg | sed -e 's/svg/pdf/g')
+SVGIS=$(shell /bin/ls *.svgtune | sed -e 's/.svgtune/_tuned/g')
+
+FMAKE := $(MAKE) -s -f $(lastword $(MAKEFILE_LIST))
+
+pics: $(SVGIS) $(PICS)
+
+clean::
+	for p in *.svg; do rm -f $${p%*.svg}.{pdf,eps}; done
+
+ignore-%:
+	@grep -q "^$*$$" .gitignore || { \
+	  echo "$*" >> .gitignore; echo "Ignore $@"; }
+
+%_tuned: %.svgtune ignore-%_tuned
+	@echo "Tuning SVG using $<"
+	@svgtune $<
+
+%.pdf: %.svg ignore-%.pdf
+	@echo "Rendering $@"
+	@inkscape -z -f "$<" -A "$@"
+
+%.eps: %.svg ignore-%.eps
+	@echo "Rendering $@"
+	@inkscape -z -T -f "$<" -E "$@"
 
