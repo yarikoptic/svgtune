@@ -1,0 +1,196 @@
+#!/usr/bin/python
+# emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
+# vi: set ft=python sts=4 ts=4 sw=4 et:
+#------------------------- =+- Python script -+= -------------------------
+"""
+  Yaroslav Halchenko                                      CS@UNM, CS@NJIT
+  web:     http://www.onerussian.com                      & PSYCH@RUTGERS
+  e-mail:  yoh@onerussian.com                              ICQ#: 60653192
+
+ DESCRIPTION (NOTES):
+
+   A little helper to generate a set of .svg files out of a single
+   .svg file, by tuning respective groups/layers visibility,
+   transparency or anything else.
+
+   It might come very handy for generation of incremental figures to
+   be embedded into the presentation. For the input this script looks
+   for a single command line parameter -- file with instructions,
+   which might look like:
+
+# Load the file we should use
+%file somefigure.svg
+
+layers style=display:none
+%save 0_blank
+
+layer label=elements style=display:inline
+%save 1
+
+layer id=layer2 style=display:inline
+%save 1_3
+
+# Lets make some group visible
+g id=g14546 style=display:inline
+%save 1_3
+
+   For the results, look under somefigure_tuned/ directory
+
+
+ COPYRIGHT: Yaroslav Halchenko 2009
+
+ LICENSE:
+
+  This program is free software; you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation; either version 2 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program; if not, write to the
+  Free Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston,
+  MA 02110-1301, USA.
+
+ On Debian system see /usr/share/common-licenses/GPL for the full license.
+"""
+#-----------------\____________________________________/------------------
+
+__author__ = 'Yaroslav Halchenko'
+__version__ = (0, 0, 1)
+__copyright__ = 'Copyright (c) 2009 Yaroslav Halchenko'
+__license__ = 'GPL'
+
+import os, sys
+from lxml import etree
+
+def split2(l, msg, sep=' '):
+    """Split l into 2 pieces using ' ' as a separator
+    """
+    p = [x.strip() for x in (l.split(sep, 1)) if x != '']
+
+    if len(p) != 2:
+        raise ValueError, msg + '. Got %s for "%s"' % (str(p), l)
+
+    return p
+
+
+def replace_key(attr_value, key, value):
+    """Replace value for a given key
+       If key is not found, new one is added
+    """
+    v = attr_value.split(';')
+    for i in xrange(len(v)):
+        if v[i].startswith(key + ':'):
+            v[i] = '%s:%s' % (key, value)
+    return ';'.join(v)
+
+
+def change_attr(el, attr, values):
+    """Change values listed within attribute attr
+    """
+    v = el.attrib.get(attr, '')
+    for value in values.split(';'):
+        k,newv = split2(value, "Each value must be in the form x:y", ":")
+        v = replace_key(v, k, newv)
+    el.attrib[attr] = v
+
+
+if len(sys.argv) != 2:
+    raise RuntimeError, "Please provide file with instructions"
+
+ifile = sys.argv[1]
+# ifile = '/tmp/1.svgi'
+svgfile = None
+svg = None
+dname = None
+
+for line_ in open(ifile).readlines():
+    line = line_.strip()
+    if line.startswith('#') or line == '':
+        continue
+
+    # parse out first element
+    cmd, params = split2(line, "Each line must be 'command parameters'")
+
+    if cmd == '%file':
+        svgfile = params
+
+        print "Loading file %s for tuning" % svgfile
+        svgdoc = etree.parse(svgfile)
+        svg = svgdoc.getroot()
+
+        # dig out SVG namespace and conveniently wrap it in {}
+        NSsvg = '{%s}' % svg.nsmap['svg']
+        NSis = '{%s}' % svg.nsmap['inkscape']
+        dname = '%s_tuned' % os.path.splitext(svgfile)[0]
+        try:
+            os.mkdir(dname)
+        except:
+            pass # if directory exists or hell with everything
+        continue
+
+    # We must have file loaded by now
+    if svg is None:
+        raise RuntimeError, "Please use %file to load the file prior %s" % cmd
+
+    if cmd == '%save':
+        ofile = '%s/%s.svg' % (dname, params)
+        print " Storing into %s" % ofile
+        file(ofile, 'w').write(
+            etree.tostring(svgdoc, pretty_print=True))
+        continue
+
+    #
+    # Figure out the victims for changes -- victims
+    victims = None
+    if cmd == 'layers':
+        changes = params
+        victims = svg.findall('.//%sg[@%sgroupmode="layer"]'
+                              % (NSsvg, NSis))
+    elif cmd in ['layer', 'g']:
+        # parse out first element
+        identifier, changes = split2(params,
+                   "For each layer or g you must list id or label + changes")
+
+        # determine the victims
+        sid = ''
+        if cmd == 'layer':
+            sid += '[@%sgroupmode="layer"]' % NSis
+
+        id1, id2 = identifier.split('=')
+
+        if id1 == 'label':
+            sid += '[@%slabel="%s"]' % (NSis, id2)
+        elif id1 == 'id':
+            sid += '[@id="%s"]' % (id2)
+        else:
+            raise ValueError, "Unknown identifier %s in %s" % (id1, line)
+
+        victims = svg.findall('.//%sg%s' % (NSsvg, sid))
+        nvictims = len(victims)
+        if nvictims == 0:
+            raise ValueError, "Cannot find any victim for '%s'" % identifier
+        elif nvictims > 1:
+            raise ValueError, "We should get a single victim for %s " \
+                  "but got %d of them" % (identifier, nvictims)
+
+
+    #
+    # Figure out the actual changes to take and do them
+    for change in changes.split(' '):
+        if change == '': continue
+        attr, values = split2(change,
+                               'Each change should be listed as attribute=value', '=')
+        if attr == 'style':
+            func = lambda vic: change_attr(vic, attr, values)
+        else:
+            raise ValueError, "Don't yet handle attribute %s" % attr
+
+        for victim in victims:
+            func(victim)
+

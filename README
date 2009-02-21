@@ -1,0 +1,36 @@
+DESCRIPTION
+-----------
+
+svgtune is just a little helper to generate a set of .svg files out of
+a single .svg file, by tuning respective groups/layers visibility,
+transparency or anything else.
+
+It might come very handy for generation of incremental figures to be
+embedded into the presentation.  For the input, this takes a single
+command line parameter -- file with instructions, which might look
+like:
+
+
+# Load the file we should use
+%file somefigure.svg
+
+# Make all layers invisible
+layers style=display:none
+# Store current state into 0_blank file
+%save 0_blank
+
+layer label=elements style=display:inline
+%save 1
+
+layer id=layer2 style=display:inline
+%save 1_3
+
+# Lets make some group visible
+g id=g14546 style=display:inline
+%save 1_3
+
+
+For the results, look under somefigure_tuned/ directory.  You might make
+advantage of having following in your Makefile:
+
+
