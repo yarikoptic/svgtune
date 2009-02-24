@@ -9,33 +9,7 @@
 
  DESCRIPTION (NOTES):
 
-   A little helper to generate a set of .svg files out of a single
-   .svg file, by tuning respective groups/layers visibility,
-   transparency or anything else.
-
-   It might come very handy for generation of incremental figures to
-   be embedded into the presentation. For the input this script looks
-   for a single command line parameter -- file with instructions,
-   which might look like:
-
-# Load the file we should use
-%file somefigure.svg
-
-layers style=display:none
-%save 0_blank
-
-layer label=elements style=display:inline
-%save 1
-
-layer id=layer2 style=display:inline
-%save 1_3
-
-# Lets make some group visible
-g id=g14546 style=display:inline
-%save 1_3
-
-   For the results, look under somefigure_tuned/ directory
-
+    See README shipped with this tool
 
  COPYRIGHT: Yaroslav Halchenko 2009
 
@@ -65,7 +39,8 @@ __version__ = (0, 0, 1)
 __copyright__ = 'Copyright (c) 2009 Yaroslav Halchenko'
 __license__ = 'GPL'
 
-import os, sys
+import os, sys, re
+from optparse import OptionParser
 from lxml import etree
 
 def split2(l, msg, sep=' '):
@@ -99,11 +74,24 @@ def change_attr(el, attr, values):
         v = replace_key(v, k, newv)
     el.attrib[attr] = v
 
+def verbose(level, str):
+    if level <= options.verbose:
+        print " "*level, str
 
-if len(sys.argv) != 2:
-    raise RuntimeError, "Please provide file with instructions"
+usage = "usage: %prog [options] inputfile.svgtune"
+parser = OptionParser(usage=usage)
+parser.add_option("-v", action="count", dest="verbose",
+                  help="Increase verbosity with multiple -v")
+parser.add_option("-p", "--previews", action="store_true",
+                  dest="previews", help="Store preview png's")
 
-ifile = sys.argv[1]
+(options, args) = parser.parse_args()
+
+if len(args) != 1:
+    raise SystemExit, \
+          "Error: Please provide single input file with instructions."
+
+ifile = args[0]
 # ifile = '/tmp/1.svgi'
 svgfile = None
 svg = None
@@ -120,7 +108,7 @@ for line_ in open(ifile).readlines():
     if cmd == '%file':
         svgfile = params
 
-        print "Loading file %s for tuning" % svgfile
+        verbose(1, "Processing file %s for tuning" % svgfile)
         svgdoc = etree.parse(svgfile)
         svg = svgdoc.getroot()
 
@@ -140,9 +128,13 @@ for line_ in open(ifile).readlines():
 
     if cmd == '%save':
         ofile = '%s/%s.svg' % (dname, params)
-        print " Storing into %s" % ofile
+        verbose(1, " Storing into %s" % ofile)
         file(ofile, 'w').write(
             etree.tostring(svgdoc, pretty_print=True))
+        if options.previews:
+            verbose(3, "Generating preview")
+            os.system('inkscape -z -f %s -e %s -d 90 >/dev/null 2>&1' %
+                      (ofile, ofile.replace('.svg', '_preview.png')))
         continue
 
     #
@@ -163,19 +155,31 @@ for line_ in open(ifile).readlines():
             sid += '[@%sgroupmode="layer"]' % NSis
 
         id1, id2 = identifier.split('=')
-
+        sid_re_attr = None             # either we need to do re.search
+        sid_re_str = id2
         if id1 == 'label':
             sid += '[@%slabel="%s"]' % (NSis, id2)
         elif id1 == 'id':
             sid += '[@id="%s"]' % (id2)
+        elif id1 == 'label:re':
+            sid_re_attr = '%slabel' % NSis
+        elif id1 == 'id:re':
+            sid_re_attr = 'id'
         else:
             raise ValueError, "Unknown identifier %s in %s" % (id1, line)
 
         victims = svg.findall('.//%sg%s' % (NSsvg, sid))
+
+        # optionally perform search using re
+        if sid_re_attr is not None:
+            regexp = re.compile(sid_re_str)
+            victims = [v for v in victims
+                       if regexp.search(v.attrib[sid_re_attr])]
+
         nvictims = len(victims)
         if nvictims == 0:
             raise ValueError, "Cannot find any victim for '%s'" % identifier
-        elif nvictims > 1:
+        elif nvictims > 1 and sid_re_attr is None:
             raise ValueError, "We should get a single victim for %s " \
                   "but got %d of them" % (identifier, nvictims)
 
@@ -185,7 +189,7 @@ for line_ in open(ifile).readlines():
     for change in changes.split(' '):
         if change == '': continue
         attr, values = split2(change,
-                               'Each change should be listed as attribute=value', '=')
+                        'Each change should be listed as attribute=value', '=')
         if attr == 'style':
             func = lambda vic: change_attr(vic, attr, values)
         else:
