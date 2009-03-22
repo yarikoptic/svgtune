@@ -121,6 +121,21 @@ for line_ in open(ifile).readlines():
         except:
             pass # if directory exists or hell with everything
         continue
+    elif cmd == "%options":
+        # For now simply split by space
+        option_values = params.split(' ')
+        for option_value in option_values:
+            t = option_value.split('=', 1)
+            option = t[0]
+            if len(t) > 1: value = t[1]
+            else:          value = None
+            if option == "previews":
+                # if only said "previews" assume that we want them
+                if value is None: value = True
+                options.previews = bool(value)
+            else:
+                raise ValueError, "Unknown option %s", option
+        continue
 
     # We must have file loaded by now
     if svg is None:
