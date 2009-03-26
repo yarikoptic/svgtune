@@ -72,6 +72,8 @@ def change_attr(el, attr, values):
     for value in values.split(';'):
         k,newv = split2(value, "Each value must be in the form x:y", ":")
         v = replace_key(v, k, newv)
+    if v == '':                         # there were no such yet
+        v = "%s:%s" % (k, newv)
     el.attrib[attr] = v
 
 def verbose(level, str):
@@ -159,7 +161,7 @@ for line_ in open(ifile).readlines():
         changes = params
         victims = svg.findall('.//%sg[@%sgroupmode="layer"]'
                               % (NSsvg, NSis))
-    elif cmd in ['layer', 'g']:
+    elif cmd in ['layer', 'g', 'text']:
         # parse out first element
         identifier, changes = split2(params,
                    "For each layer or g you must list id or label + changes")
