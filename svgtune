@@ -1,17 +1,17 @@
 #!/usr/bin/python
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
-#------------------------- =+- Python script -+= -------------------------
 """
-  Yaroslav Halchenko                                      CS@UNM, CS@NJIT
-  web:     http://www.onerussian.com                      & PSYCH@RUTGERS
-  e-mail:  yoh@onerussian.com                              ICQ#: 60653192
+  Yaroslav Halchenko
+  web:     http://www.onerussian.com
+  e-mail:  yoh@onerussian.com
 
  DESCRIPTION (NOTES):
 
-    See README shipped with this tool
+    See README.rst shipped with this tool.
+    "Homepage" for the tool is http://github.com/yarikoptic/svgtune
 
- COPYRIGHT: Yaroslav Halchenko 2009
+ Copyright (C) 2009, Yaroslav Halchenko
 
  LICENSE:
 
@@ -32,10 +32,9 @@
 
  On Debian system see /usr/share/common-licenses/GPL for the full license.
 """
-#-----------------\____________________________________/------------------
 
 __author__ = 'Yaroslav Halchenko'
-__version__ = (0, 0, 1)
+__version__ = (0, 0, 2)
 __copyright__ = 'Copyright (c) 2009 Yaroslav Halchenko'
 __license__ = 'GPL'
 
