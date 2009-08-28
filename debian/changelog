@@ -1,0 +1,5 @@
+svgtune (0.0.2-1) unstable; urgency=low
+
+  * Initial release with codename "Michael" (Closes: #544071)
+
+ -- Yaroslav Halchenko <debian@onerussian.com>  Fri, 28 Aug 2009 10:22:07 -0400
