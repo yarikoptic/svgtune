@@ -40,7 +40,6 @@ __license__ = 'GPL'
 
 import os, sys, re
 from optparse import OptionParser
-from lxml import etree
 
 def split2(l, msg, sep=' '):
     """Split l into 2 pieces using ' ' as a separator
@@ -79,8 +78,13 @@ def verbose(level, str):
     if level <= options.verbose:
         print " "*level, str
 
-usage = "usage: %prog [options] inputfile.svgtune"
-parser = OptionParser(usage=usage)
+def version():
+    print "svgtune v" + ".".join(__version__)
+    raise SystemExit
+
+parser = OptionParser(usage="%prog [options] inputfile.svgtune",
+                      version="%prog version "
+                              + ".".join([str(i) for i in __version__]))
 parser.add_option("-v", action="count", dest="verbose",
                   help="Increase verbosity with multiple -v")
 parser.add_option("-p", "--previews", action="store_true",
@@ -91,6 +95,9 @@ parser.add_option("-p", "--previews", action="store_true",
 if len(args) != 1:
     raise SystemExit, \
           "Error: Please provide single input file with instructions."
+
+# Now we can load lxml
+from lxml import etree
 
 ifile = args[0]
 # ifile = '/tmp/1.svgi'
