@@ -57,9 +57,15 @@ def replace_key(attr_value, key, value):
        If key is not found, new one is added
     """
     v = attr_value.split(';')
+    changed = False
+    newval = '%s:%s' % (key, value)
     for i in xrange(len(v)):
         if v[i].startswith(key + ':'):
-            v[i] = '%s:%s' % (key, value)
+            v[i] = newval
+            changed = True
+    if not changed:
+        # Wasn't found -- add one
+        v += [newval]
     return ';'.join(v)
 
 
@@ -67,11 +73,13 @@ def change_attr(el, attr, values):
     """Change values listed within attribute attr
     """
     v = el.attrib.get(attr, '')
+    changed = False
     for value in values.split(';'):
         k,newv = split2(value, "Each value must be in the form x:y", ":")
         v = replace_key(v, k, newv)
     if v == '':                         # there were no such yet
         v = "%s:%s" % (k, newv)
+    #print "Changing %s : %s, got %s" % (attr, values, str(v))
     el.attrib[attr] = v
 
 def verbose(level, str):
@@ -205,7 +213,8 @@ for line_ in open(ifile).readlines():
         elif nvictims > 1 and sid_re_attr is None:
             raise ValueError, "We should get a single victim for %s " \
                   "but got %d of them" % (identifier, nvictims)
-
+    else:
+        raise ValueError, "Unknown command '%s'." % cmd
 
     #
     # Figure out the actual changes to take and do them
