@@ -90,6 +90,35 @@ def version():
     print "svgtune v" + ".".join(__version__)
     raise SystemExit
 
+def process_options(params, options):
+    # For now simply split by space
+    option_values = params.split(' ')
+    for option_value in option_values:
+        t = option_value.split('=', 1)
+        option = t[0]
+        if len(t) > 1: value = t[1]
+        else:          value = None
+        if option == "previews":
+            # if only said "previews" assume that we want them
+            if value is None: value = True
+            options.previews = bool(value)
+        else:
+            raise ValueError, "Unknown option %s", option
+    pass
+
+
+def load_svg(svgfile):
+    verbose(1, "Processing file %s for tuning" % svgfile)
+    svgdoc = etree.parse(svgfile)
+    svg = svgdoc.getroot()
+
+    dname = '%s_tuned' % os.path.splitext(svgfile)[0]
+    try:
+        os.mkdir(dname)
+    except:
+        pass # if directory exists or hell with everything
+    return svg, svgdoc, dname
+
 parser = OptionParser(usage="%prog [options] inputfile.svgtune",
                       version="%prog version "
                               + ".".join([str(i) for i in __version__]))
@@ -122,41 +151,23 @@ for line_ in open(ifile).readlines():
     cmd, params = split2(line, "Each line must be 'command parameters'")
 
     if cmd == '%file':
-        svgfile = params
-
-        verbose(1, "Processing file %s for tuning" % svgfile)
-        svgdoc = etree.parse(svgfile)
-        svg = svgdoc.getroot()
-
-        # dig out SVG namespace and conveniently wrap it in {}
-        NSsvg = '{%s}' % svg.nsmap['svg']
-        NSis = '{%s}' % svg.nsmap['inkscape']
-        NSlink = '{%s}' % svg.nsmap['xlink']
-        dname = '%s_tuned' % os.path.splitext(svgfile)[0]
-        try:
-            os.mkdir(dname)
-        except:
-            pass # if directory exists or hell with everything
+        svg, svgdoc, dname = load_svg(params)
         continue
     elif cmd == "%options":
-        # For now simply split by space
-        option_values = params.split(' ')
-        for option_value in option_values:
-            t = option_value.split('=', 1)
-            option = t[0]
-            if len(t) > 1: value = t[1]
-            else:          value = None
-            if option == "previews":
-                # if only said "previews" assume that we want them
-                if value is None: value = True
-                options.previews = bool(value)
-            else:
-                raise ValueError, "Unknown option %s", option
+        process_options(params, options)
         continue
 
     # We must have file loaded by now
     if svg is None:
-        raise RuntimeError, "Please use %file to load the file prior %s" % cmd
+        svgfile = os.path.splitext(ifile)[0] + '.svg'
+        try:
+            svg, svgdoc, dname = load_svg(svgfile)
+        except Exception, e:
+            raise RuntimeError, \
+                  "Tried to load from %s but failed due to %s.\n" \
+                  "Please provide %%file directive to load the file prior %s " \
+                  "or have .svg file with the same name as .svgtune." \
+                  % (svgfile, e, cmd)
 
     if cmd == '%save':
         ofile = '%s/%s.svg' % (dname, params)
@@ -174,8 +185,8 @@ for line_ in open(ifile).readlines():
     victims = None
     if cmd == 'layers':
         changes = params
-        victims = svg.findall('.//%sg[@%sgroupmode="layer"]'
-                              % (NSsvg, NSis))
+        victims = svg.findall('.//{%s}g[@{%s}groupmode="layer"]'
+                              % (svg.nsmap['svg'], svg.nsmap['inkscape']))
     elif cmd in ['layer', 'g', 'text']:
         # parse out first element
         identifier, changes = split2(params,
@@ -184,29 +195,29 @@ for line_ in open(ifile).readlines():
         # determine the victims
         sid = ''
         if cmd == 'layer':
-            sid += '[@%sgroupmode="layer"]' % NSis
+            sid += '[@{%s}groupmode="layer"]' % svg.nsmap['inkscape']
 
         id1, id2 = identifier.split('=')
         sid_re_attr = None             # either we need to do re.search
         sid_re_str = id2
         if id1 == 'label':
-            sid += '[@%slabel="%s"]' % (NSis, id2)
+            sid += '[@{%s}label="%s"]' % (svg.nsmap['inkscape'], id2)
         elif id1 == 'id':
             sid += '[@id="%s"]' % (id2)
         elif id1 == 'href':
-            sid += '[@%shref="%s"]' % (NSlink, id2)
+            sid += '[@{%s}href="%s"]' % (svg.nsmap['xlink'], id2)
         elif id1 == 'href:re':
-            sid += '%shref' % NSlink
-            print NSlink
+            sid += '{%s}href' % svg.nsmap['xlink']
+            print svg.nsmap['xlink']
             print sid
         elif id1 == 'label:re':
-            sid_re_attr = '%slabel' % NSis
+            sid_re_attr = '{%s}label' % svg.nsmap['inkscape']
         elif id1 == 'id:re':
             sid_re_attr = 'id'
         else:
             raise ValueError, "Unknown identifier %s in %s" % (id1, line)
 
-        victims = svg.findall('.//%sg%s' % (NSsvg, sid))
+        victims = svg.findall('.//{%s}g%s' % (svg.nsmap['svg'], sid))
 
         # optionally perform search using re
         if sid_re_attr is not None:
