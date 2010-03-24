@@ -34,11 +34,11 @@
 """
 
 __author__ = 'Yaroslav Halchenko'
-__version__ = (0, 0, 2)
-__copyright__ = 'Copyright (c) 2009 Yaroslav Halchenko'
+__version__ = (0, 1, 0)
+__copyright__ = 'Copyright (c) 2009-2010 Yaroslav Halchenko'
 __license__ = 'GPL'
 
-import os, sys, re
+import os, re
 from optparse import OptionParser
 
 def split2(l, msg, sep=' '):
@@ -75,16 +75,16 @@ def change_attr(el, attr, values):
     v = el.attrib.get(attr, '')
     changed = False
     for value in values.split(';'):
-        k,newv = split2(value, "Each value must be in the form x:y", ":")
+        k, newv = split2(value, "Each value must be in the form x:y", ":")
         v = replace_key(v, k, newv)
     if v == '':                         # there were no such yet
         v = "%s:%s" % (k, newv)
     #print "Changing %s : %s, got %s" % (attr, values, str(v))
     el.attrib[attr] = v
 
-def verbose(level, str):
+def verbose(level, str_):
     if level <= options.verbose:
-        print " "*level, str
+        print " "*level, str_
 
 def version():
     print "svgtune v" + ".".join(__version__)
@@ -237,7 +237,8 @@ for line_ in open(ifile).readlines():
     #
     # Figure out the actual changes to take and do them
     for change in changes.split(' '):
-        if change == '': continue
+        if change == '':
+            continue
         attr, values = split2(change,
                         'Each change should be listed as attribute=value', '=')
         if attr == 'style':
