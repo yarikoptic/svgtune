@@ -1,3 +1,9 @@
+svgtune (0.1.0-1) unstable; urgency=low
+
+  * New "upstream" release.
+
+ -- Yaroslav Halchenko <debian@onerussian.com>  Tue, 23 Mar 2010 20:13:30 -0400
+
 svgtune (0.0.2-1) unstable; urgency=low
 
   * Initial release with codename "Michael" (Closes: #544071)
