@@ -3,7 +3,7 @@ Section: graphics
 Priority: optional
 Maintainer: Yaroslav Halchenko <debian@onerussian.com>
 Build-Depends: cdbs, debhelper (>= 7), help2man, python
-Standards-Version: 3.8.2
+Standards-Version: 3.9.1
 Homepage: http://github.com/yarikoptic/svgtune
 XS-Vcs-Git: git://github.com/yarikoptic/svgtune.git
 XS-Vcs-Browser: http://github.com/yarikoptic/svgtune

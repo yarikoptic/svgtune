@@ -1,11 +1,11 @@
-Format-Specification: http://wiki.debian.org/Proposals/CopyrightFormat
-Upstream-Name: svgtune
+Format-Specification: http://svn.debian.org/wsvn/dep/web/deps/dep5.mdwn?op=file&rev=135
+Name: svgtune
+Maintainer: Yaroslav Halchenko <debian@onerussian.com>
 Upstream-Source-Location: http://github.com/yarikoptic/svgtune
 
 Files: *
-Copyright: Copyright,
-    2009, Yaroslav Halchenko <debian@onerussian.com>
-License: GPL-2
+Copyright: 2009-2010, Yaroslav Halchenko <debian@onerussian.com>
+License: GPL-2+
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 2 of the License, or
@@ -21,8 +21,3 @@ License: GPL-2
 
     On Debian GNU/Linux systems, the complete text of the GPL-2 License
     can be found in `/usr/share/common-licenses/GPL-2'.
-
-Files: debian/*
-Copyright: Copyright 2009,
-    Yaroslav Halchenko <debian@onerussian.com>
-License: GPL-2

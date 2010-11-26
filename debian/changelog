@@ -1,6 +1,8 @@
 svgtune (0.1.0-2) unstable; urgency=low
 
   * 2nd attempt to release with codename "Andreas" (Closes: #544071)
+  * Boosted policy compliance to 3.9.1 - no changes
+  * Updated debian/changelog
 
  -- Yaroslav Halchenko <debian@onerussian.com>  Fri, 26 Nov 2010 10:45:23 -0500
 
