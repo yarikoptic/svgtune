@@ -1,11 +1,17 @@
-svgtune (0.1.0-1) unstable; urgency=low
+svgtune (0.1.0-2) unstable; urgency=low
+
+  * 2nd attempt to release with codename "Andreas" (Closes: #544071)
+
+ -- Yaroslav Halchenko <debian@onerussian.com>  Fri, 26 Nov 2010 10:45:23 -0500
+
+svgtune (0.1.0-1) UNRELEASED; urgency=low
 
   * New "upstream" release.
 
  -- Yaroslav Halchenko <debian@onerussian.com>  Tue, 23 Mar 2010 20:13:30 -0400
 
-svgtune (0.0.2-1) unstable; urgency=low
+svgtune (0.0.2-1) UNRELEASED; urgency=low
 
-  * Initial release with codename "Michael" (Closes: #544071)
+  * Initial release with codename "Michael".
 
  -- Yaroslav Halchenko <debian@onerussian.com>  Fri, 28 Aug 2009 10:22:07 -0400
