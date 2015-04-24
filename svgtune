@@ -11,8 +11,6 @@
     See README.rst shipped with this tool.
     "Homepage" for the tool is http://github.com/yarikoptic/svgtune
 
- Copyright (C) 2009, Yaroslav Halchenko
-
  LICENSE:
 
   This program is free software; you can redistribute it and/or modify
@@ -34,11 +32,12 @@
 """
 
 __author__ = 'Yaroslav Halchenko'
-__version__ = (0, 1, 0)
-__copyright__ = 'Copyright (c) 2009-2010 Yaroslav Halchenko'
+__version__ = (0, 2, 0, 'dev')
+__copyright__ = 'Copyright (c) 2009-2015 Yaroslav Halchenko'
 __license__ = 'GPL'
 
 import os, re
+from lxml import etree
 from optparse import OptionParser
 
 def split2(l, msg, sep=' '):
@@ -54,6 +53,7 @@ def split2(l, msg, sep=' '):
 
 def replace_key(attr_value, key, value):
     """Replace value for a given key
+
        If key is not found, new one is added
     """
     v = attr_value.split(';')
@@ -82,13 +82,16 @@ def change_attr(el, attr, values):
     #print "Changing %s : %s, got %s" % (attr, values, str(v))
     el.attrib[attr] = v
 
+
 def verbose(level, str_):
     if level <= options.verbose:
-        print " "*level, str_
+        print(" "*level + str_)
+
 
 def version():
-    print "svgtune v" + ".".join(__version__)
+    print("svgtune v" + ".".join(__version__))
     raise SystemExit
+
 
 def process_options(params, options):
     # For now simply split by space
@@ -96,11 +99,11 @@ def process_options(params, options):
     for option_value in option_values:
         t = option_value.split('=', 1)
         option = t[0]
-        if len(t) > 1: value = t[1]
-        else:          value = None
+        value = t[1] if len(t) > 1 else None
         if option == "previews":
             # if only said "previews" assume that we want them
-            if value is None: value = True
+            if value is None:
+                value = True
             options.previews = bool(value)
         else:
             raise ValueError, "Unknown option %s", option
@@ -119,133 +122,140 @@ def load_svg(svgfile):
         pass # if directory exists or hell with everything
     return svg, svgdoc, dname
 
-parser = OptionParser(usage="%prog [options] inputfile.svgtune",
-                      version="%prog version "
-                              + ".".join([str(i) for i in __version__]))
-parser.add_option("-v", action="count", dest="verbose",
-                  help="Increase verbosity with multiple -v")
-parser.add_option("-p", "--previews", action="store_true",
-                  dest="previews", help="Store preview png's")
 
-(options, args) = parser.parse_args()
+def parse_cmdline():
+    parser = OptionParser(usage="%prog [options] inputfile.svgtune",
+                          version="%prog version "
+                                  + ".".join([str(i) for i in __version__]))
+    parser.add_option("-v", action="count", dest="verbose",
+                      help="Increase verbosity with multiple -v")
+    parser.add_option("-p", "--previews", action="store_true",
+                      dest="previews", help="Store preview png's")
 
-if len(args) != 1:
-    raise SystemExit, \
-          "Error: Please provide single input file with instructions."
+    (options_, args) = parser.parse_args()
 
-# Now we can load lxml
-from lxml import etree
+    if len(args) != 1:
+        raise SystemExit(
+            "Error: Please provide single input file with instructions.")
 
-ifile = args[0]
-# ifile = '/tmp/1.svgi'
-svgfile = None
-svg = None
-dname = None
+    return args[0], options_
 
-for line_ in open(ifile).readlines():
-    line = line_.strip()
-    if line.startswith('#') or line == '':
-        continue
 
-    # parse out first element
-    cmd, params = split2(line, "Each line must be 'command parameters'")
+def svgtune(ifile, options):
+    svg = None
+    dname = None
 
-    if cmd == '%file':
-        svg, svgdoc, dname = load_svg(params)
-        continue
-    elif cmd == "%options":
-        process_options(params, options)
-        continue
-
-    # We must have file loaded by now
-    if svg is None:
-        svgfile = os.path.splitext(ifile)[0] + '.svg'
-        try:
-            svg, svgdoc, dname = load_svg(svgfile)
-        except Exception, e:
-            raise RuntimeError, \
-                  "Tried to load from %s but failed due to %s.\n" \
-                  "Please provide %%file directive to load the file prior %s " \
-                  "or have .svg file with the same name as .svgtune." \
-                  % (svgfile, e, cmd)
-
-    if cmd == '%save':
-        ofile = '%s/%s.svg' % (dname, params)
-        verbose(1, " Storing into %s" % ofile)
-        file(ofile, 'w').write(
-            etree.tostring(svgdoc, pretty_print=True))
-        if options.previews:
-            verbose(3, "Generating preview")
-            os.system('inkscape -z -f %s -e %s -d 90 >/dev/null 2>&1' %
-                      (ofile, ofile.replace('.svg', '_preview.png')))
-        continue
-
-    #
-    # Figure out the victims for changes -- victims
-    victims = None
-    if cmd == 'layers':
-        changes = params
-        victims = svg.findall('.//{%s}g[@{%s}groupmode="layer"]'
-                              % (svg.nsmap['svg'], svg.nsmap['inkscape']))
-    elif cmd in ['layer', 'g', 'text']:
-        # parse out first element
-        identifier, changes = split2(params,
-                   "For each layer or g you must list id or label + changes")
-
-        # determine the victims
-        sid = ''
-        if cmd == 'layer':
-            sid += '[@{%s}groupmode="layer"]' % svg.nsmap['inkscape']
-
-        id1, id2 = identifier.split('=')
-        sid_re_attr = None             # either we need to do re.search
-        sid_re_str = id2
-        if id1 == 'label':
-            sid += '[@{%s}label="%s"]' % (svg.nsmap['inkscape'], id2)
-        elif id1 == 'id':
-            sid += '[@id="%s"]' % (id2)
-        elif id1 == 'href':
-            sid += '[@{%s}href="%s"]' % (svg.nsmap['xlink'], id2)
-        elif id1 == 'href:re':
-            sid += '{%s}href' % svg.nsmap['xlink']
-            print svg.nsmap['xlink']
-            print sid
-        elif id1 == 'label:re':
-            sid_re_attr = '{%s}label' % svg.nsmap['inkscape']
-        elif id1 == 'id:re':
-            sid_re_attr = 'id'
-        else:
-            raise ValueError, "Unknown identifier %s in %s" % (id1, line)
-
-        victims = svg.findall('.//{%s}g%s' % (svg.nsmap['svg'], sid))
-
-        # optionally perform search using re
-        if sid_re_attr is not None:
-            regexp = re.compile(sid_re_str)
-            victims = [v for v in victims
-                       if regexp.search(v.attrib[sid_re_attr])]
-
-        nvictims = len(victims)
-        if nvictims == 0:
-            raise ValueError, "Cannot find any victim for '%s'" % identifier
-        elif nvictims > 1 and sid_re_attr is None:
-            raise ValueError, "We should get a single victim for %s " \
-                  "but got %d of them" % (identifier, nvictims)
-    else:
-        raise ValueError, "Unknown command '%s'." % cmd
-
-    #
-    # Figure out the actual changes to take and do them
-    for change in changes.split(' '):
-        if change == '':
+    for line_ in open(ifile).readlines():
+        line = line_.strip()
+        if line.startswith('#') or line == '':
             continue
-        attr, values = split2(change,
-                        'Each change should be listed as attribute=value', '=')
-        if attr == 'style':
-            func = lambda vic: change_attr(vic, attr, values)
+
+        # parse out first element
+        cmd, params = split2(line, "Each line must be 'command parameters'")
+
+        if cmd == '%file':
+            svg, svgdoc, dname = load_svg(params)
+            continue
+        elif cmd == "%options":
+            process_options(params, options)
+            continue
+
+        # We must have file loaded by now
+        if not svg:
+            svgfile = os.path.splitext(ifile)[0] + '.svg'
+            try:
+                svg, svgdoc, dname = load_svg(svgfile)
+            except Exception, e:
+                raise RuntimeError(
+                    "Tried to load from %s but failed due to %s.\n"
+                    "Please provide %%file directive to load the file prior %s "
+                    "or have .svg file with the same name as .svgtune."
+                    % (svgfile, e, cmd))
+
+        if cmd == '%save':
+            ofile = '%s/%s.svg' % (dname, params)
+            verbose(1, "Storing into %s" % ofile)
+            with file(ofile, 'w') as f:
+                f.write(etree.tostring(svgdoc, pretty_print=True))
+            if options.previews:
+                verbose(3, "Generating preview")
+                os.system('inkscape -z -f %s -e %s -d 90 >/dev/null 2>&1' %
+                          (ofile, ofile.replace('.svg', '_preview.png')))
+            continue
+
+        #
+        # Figure out the victims for changes -- victims
+        victims = None
+        if cmd == 'layers':
+            changes = params
+            victims = svg.findall('.//{%s}g[@{%s}groupmode="layer"]'
+                                  % (svg.nsmap['svg'], svg.nsmap['inkscape']))
+        elif cmd in ['layer', 'g', 'text']:
+            # parse out first element
+            identifier, changes = split2(params,
+                       "For each layer or g you must list id or label + changes")
+
+            # determine the victims
+            sid = ''
+            if cmd == 'layer':
+                sid += '[@{%s}groupmode="layer"]' % svg.nsmap['inkscape']
+
+            id1, id2 = identifier.split('=')
+            sid_re_attr = None             # either we need to do re.search
+            sid_re_str = id2
+            if id1 == 'label':
+                sid += '[@{%s}label="%s"]' % (svg.nsmap['inkscape'], id2)
+            elif id1 == 'id':
+                sid += '[@id="%s"]' % (id2)
+            elif id1 == 'href':
+                sid += '[@{%s}href="%s"]' % (svg.nsmap['xlink'], id2)
+            elif id1 == 'href:re':
+                sid += '{%s}href' % svg.nsmap['xlink']
+                print svg.nsmap['xlink']
+                print sid
+            elif id1 == 'label:re':
+                sid_re_attr = '{%s}label' % svg.nsmap['inkscape']
+            elif id1 == 'id:re':
+                sid_re_attr = 'id'
+            else:
+                raise ValueError("Unknown identifier %s in %s" % (id1, line))
+
+            victims = svg.findall('.//{%s}g%s' % (svg.nsmap['svg'], sid))
+
+            # optionally perform search using re
+            if sid_re_attr is not None:
+                regexp = re.compile(sid_re_str)
+                victims = [v for v in victims
+                           if regexp.search(v.attrib[sid_re_attr])]
+
+            nvictims = len(victims)
+            if nvictims == 0:
+                raise ValueError("Cannot find any victim for '%s'" % identifier)
+            elif nvictims > 1 and sid_re_attr is None:
+                raise ValueError(
+                    "We should get a single victim for %s "
+                    "but got %d of them" % (identifier, nvictims))
         else:
-            raise ValueError, "Don't yet handle attribute %s" % attr
+            raise ValueError("Unknown command '%s'." % cmd)
 
-        for victim in victims:
-            func(victim)
+        #
+        # Figure out the actual changes to take and do them
+        for change in changes.split(' '):
+            if change == '':
+                continue
+            attr, values = split2(
+                change,
+                'Each change should be listed as attribute=value',
+                '=')
+            if attr == 'style':
+                func = lambda vic: change_attr(vic, attr, values)
+            else:
+                raise ValueError("Don't yet handle attribute %s" % attr)
 
+            for victim in victims:
+                func(victim)
+
+
+if __name__ == "__main__":
+    ifile, options = parse_cmdline()
+    svgtune(ifile, options)
