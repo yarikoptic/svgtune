@@ -32,7 +32,7 @@
 """
 
 __author__ = 'Yaroslav Halchenko'
-__version__ = (0, 2, 0, 'dev')
+__version__ = (0, 2, 0)
 __copyright__ = 'Copyright (c) 2009-2015 Yaroslav Halchenko'
 __license__ = 'GPL'
 
@@ -40,13 +40,19 @@ import os, re
 from lxml import etree
 from optparse import OptionParser
 
+# Setup rudimentary logging
+import logging
+lgr = logging.getLogger("svgtune")
+lgr.addHandler(logging.StreamHandler())
+
+
 def split2(l, msg, sep=' '):
     """Split l into 2 pieces using ' ' as a separator
     """
     p = [x.strip() for x in (l.split(sep, 1)) if x != '']
 
     if len(p) != 2:
-        raise ValueError, msg + '. Got %s for "%s"' % (str(p), l)
+        raise ValueError(msg + '. Got %s for "%s"' % (str(p), l))
 
     return p
 
@@ -85,7 +91,7 @@ def change_attr(el, attr, values):
 
 def verbose(level, str_):
     if level <= options.verbose:
-        print(" "*level + str_)
+        lgr.info(" "*(level-1) + str_)
 
 
 def version():
@@ -100,13 +106,13 @@ def process_options(params, options):
         t = option_value.split('=', 1)
         option = t[0]
         value = t[1] if len(t) > 1 else None
-        if option == "previews":
+        if option in ["previews", "nosvgs"]:
             # if only said "previews" assume that we want them
             if value is None:
                 value = True
-            options.previews = bool(value)
+            setattr(options, option, bool(value))
         else:
-            raise ValueError, "Unknown option %s", option
+            raise ValueError("Unknown option %s" % option)
     pass
 
 
@@ -131,12 +137,17 @@ def parse_cmdline():
                       help="Increase verbosity with multiple -v")
     parser.add_option("-p", "--previews", action="store_true",
                       dest="previews", help="Store preview png's")
+    parser.add_option("--no-svgs", action="store_true",
+                      dest="nosvgs", help="Remove 'final' svgs")
+
 
     (options_, args) = parser.parse_args()
 
     if len(args) != 1:
         raise SystemExit(
             "Error: Please provide single input file with instructions.")
+
+    lgr.setLevel(logging.DEBUG if options_.verbose >= 4 else logging.INFO)
 
     return args[0], options_
 
@@ -149,6 +160,8 @@ def svgtune(ifile, options):
         line = line_.strip()
         if line.startswith('#') or line == '':
             continue
+        if line.rstrip() == '%exit':
+            break
 
         # parse out first element
         cmd, params = split2(line, "Each line must be 'command parameters'")
@@ -161,7 +174,7 @@ def svgtune(ifile, options):
             continue
 
         # We must have file loaded by now
-        if not svg:
+        if svg is None:
             svgfile = os.path.splitext(ifile)[0] + '.svg'
             try:
                 svg, svgdoc, dname = load_svg(svgfile)
@@ -172,15 +185,18 @@ def svgtune(ifile, options):
                     "or have .svg file with the same name as .svgtune."
                     % (svgfile, e, cmd))
 
-        if cmd == '%save':
+        elif cmd == '%save':
             ofile = '%s/%s.svg' % (dname, params)
             verbose(1, "Storing into %s" % ofile)
             with file(ofile, 'w') as f:
                 f.write(etree.tostring(svgdoc, pretty_print=True))
             if options.previews:
                 verbose(3, "Generating preview")
-                os.system('inkscape -z -f %s -e %s -d 90 >/dev/null 2>&1' %
+                os.system('inkscape -z -f %s -e %s -d 300 >/dev/null 2>&1' %
                           (ofile, ofile.replace('.svg', '_preview.png')))
+            if options.nosvgs:
+                verbose(4, "Removing generated svg")
+                os.remove(ofile)
             continue
 
         #
@@ -190,29 +206,37 @@ def svgtune(ifile, options):
             changes = params
             victims = svg.findall('.//{%s}g[@{%s}groupmode="layer"]'
                                   % (svg.nsmap['svg'], svg.nsmap['inkscape']))
-        elif cmd in ['layer', 'g', 'text']:
+        elif cmd in ['layer', 'g', 'text', 'any']:
             # parse out first element
             identifier, changes = split2(params,
                        "For each layer or g you must list id or label + changes")
 
             # determine the victims
             sid = ''
-            if cmd == 'layer':
-                sid += '[@{%s}groupmode="layer"]' % svg.nsmap['inkscape']
-
             id1, id2 = identifier.split('=')
             sid_re_attr = None             # either we need to do re.search
             sid_re_str = id2
+
+            if cmd == 'layer':
+                sid += '[@{%s}groupmode="layer"]' % svg.nsmap['inkscape']
+                elem = 'g'
+            elif cmd == 'any':
+                # will be custom anyways
+                pass
+            else:
+                elem = cmd
+
+
             if id1 == 'label':
                 sid += '[@{%s}label="%s"]' % (svg.nsmap['inkscape'], id2)
             elif id1 == 'id':
-                sid += '[@id="%s"]' % (id2)
+                sid += '[@id="%s"]' % (id2,)
             elif id1 == 'href':
                 sid += '[@{%s}href="%s"]' % (svg.nsmap['xlink'], id2)
             elif id1 == 'href:re':
                 sid += '{%s}href' % svg.nsmap['xlink']
-                print svg.nsmap['xlink']
-                print sid
+                lgr.debug(svg.nsmap['xlink'])
+                lgr.debug("sid=%r" % sid)
             elif id1 == 'label:re':
                 sid_re_attr = '{%s}label' % svg.nsmap['inkscape']
             elif id1 == 'id:re':
@@ -220,18 +244,32 @@ def svgtune(ifile, options):
             else:
                 raise ValueError("Unknown identifier %s in %s" % (id1, line))
 
-            victims = svg.findall('.//{%s}g%s' % (svg.nsmap['svg'], sid))
+            if cmd != 'any':
+                victims = svg.findall('.//{%s}%s%s'
+                                      % (svg.nsmap['svg'], elem, sid))
+                lgr.debug("Found %d victims searching for %r" % (len(victims), sid))
+            else:
+                victims = svg.findall('.//')
+                lgr.debug("Found %d overall victims" % len(victims))
+                if not id1.endswith(':re'):
+                    victims = filter(lambda v: v.attrib.get(id1, None) == id2,
+                                     victims)
+                    lgr.debug("After selection based on %s was left with "
+                              "%d victims" % (id1, len(victims)))
 
             # optionally perform search using re
             if sid_re_attr is not None:
                 regexp = re.compile(sid_re_str)
+                victims_orig = victims # for debugging
                 victims = [v for v in victims
-                           if regexp.search(v.attrib[sid_re_attr])]
+                           if regexp.search(v.attrib.get(sid_re_attr, ""))]
+                lgr.debug("Left with %d after matching regexp %r"
+                          % (len(victims), sid_re_str))
 
             nvictims = len(victims)
             if nvictims == 0:
                 raise ValueError("Cannot find any victim for '%s'" % identifier)
-            elif nvictims > 1 and sid_re_attr is None:
+            elif nvictims > 1 and not sid_re_attr:
                 raise ValueError(
                     "We should get a single victim for %s "
                     "but got %d of them" % (identifier, nvictims))
