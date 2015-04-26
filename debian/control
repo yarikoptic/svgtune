@@ -3,10 +3,10 @@ Section: graphics
 Priority: optional
 Maintainer: Yaroslav Halchenko <debian@onerussian.com>
 Build-Depends: cdbs, debhelper (>= 7), help2man, python
-Standards-Version: 3.9.1
+Standards-Version: 3.9.6
 Homepage: http://github.com/yarikoptic/svgtune
-XS-Vcs-Git: git://github.com/yarikoptic/svgtune.git
-XS-Vcs-Browser: http://github.com/yarikoptic/svgtune
+Vcs-Git: git://github.com/yarikoptic/svgtune.git -b debian
+Vcs-Browser: http://github.com/yarikoptic/svgtune
 
 
 Package: svgtune
@@ -14,7 +14,7 @@ Architecture: all
 Depends: python, ${misc:Depends}, python-lxml
 Suggests: inkscape
 Description: tool to generate a set of .svg files out of a single .svg file
- svgtune is just a little helper to generate a set of .svg files out
+ svgtune is a little helper to generate a set of .svg files out
  of a single .svg file, by tuning respective groups/layers visibility,
  transparency or anything else.
  .

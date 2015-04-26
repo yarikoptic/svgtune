@@ -1,6 +1,15 @@
-svgtune (0.1.0-2) unstable; urgency=low
+svgtune (0.2.0-1) unstable; urgency=medium
 
-  * 2nd attempt to release with codename "Andreas" (Closes: #544071)
+  * Little helper grew up a little in the past day, so 3rd attempt to release
+    for Debian with codename "Why not?" (Closes: #544071)
+  * Boosted policy to 3.9.6
+  * Vcs fields without X- prefix and carry a debian branch specification now
+
+ -- Yaroslav Halchenko <debian@onerussian.com>  Sat, 25 Apr 2015 21:45:24 -0400
+
+svgtune (0.1.0-2) UNRELEASED; urgency=low
+
+  * 2nd attempt to release with codename "Andreas"
   * Boosted policy compliance to 3.9.1 - no changes
   * Updated debian/changelog
 
