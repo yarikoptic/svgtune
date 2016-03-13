@@ -42,7 +42,7 @@ regular expressions to match sets of those::
 COMMAND LINE
 ============
 
-See ./svtune --help for more information on command line parameters.
+See ./svgtune --help for more information on command line parameters.
 
 ======
 OUTPUT
