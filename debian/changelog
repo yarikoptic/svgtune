@@ -1,3 +1,10 @@
+svgtune (0.3.0-1) unstable; urgency=medium
+
+  * Fresh "upstream" release compatible with python3 (Closes: #956652)
+  * Policy version boost and compat to 10.
+
+ -- Yaroslav Halchenko <debian@onerussian.com>  Mon, 04 May 2020 13:00:03 -0400
+
 svgtune (0.2.0-2) unstable; urgency=medium
 
   * debian/control
