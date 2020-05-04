@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 """
@@ -30,9 +30,10 @@
 
  On Debian system see /usr/share/common-licenses/GPL for the full license.
 """
+from __future__ import print_function
 
 __author__ = 'Yaroslav Halchenko'
-__version__ = (0, 2, 0)
+__version__ = (0, 3, 0)
 __copyright__ = 'Copyright (c) 2009-2015 Yaroslav Halchenko'
 __license__ = 'GPL'
 
@@ -52,7 +53,7 @@ def split2(l, msg, sep=' '):
     p = [x.strip() for x in (l.split(sep, 1)) if x != '']
 
     if len(p) != 2:
-        raise ValueError(msg + '. Got %s for "%s"' % (str(p), l))
+        raise ValueError(msg + '. Got %s for "%s"' % (p, l))
 
     return p
 
@@ -65,14 +66,14 @@ def replace_key(attr_value, key, value):
     v = attr_value.split(';')
     changed = False
     newval = '%s:%s' % (key, value)
-    for i in xrange(len(v)):
+    for i in range(len(v)):
         if v[i].startswith(key + ':'):
             v[i] = newval
             changed = True
     if not changed:
         # Wasn't found -- add one
         v += [newval]
-    return ';'.join([x for x in v if x.strip() != ''])
+    return ';'.join(x for x in v if x.strip())
 
 
 def change_attr(el, attr, values):
@@ -178,7 +179,7 @@ def svgtune(ifile, options):
             svgfile = os.path.splitext(ifile)[0] + '.svg'
             try:
                 svg, svgdoc, dname = load_svg(svgfile)
-            except Exception, e:
+            except Exception as e:
                 raise RuntimeError(
                     "Tried to load from %s but failed due to %s.\n"
                     "Please provide %%file directive to load the file prior %s "
@@ -252,8 +253,7 @@ def svgtune(ifile, options):
                 victims = svg.findall('.//')
                 lgr.debug("Found %d overall victims" % len(victims))
                 if not id1.endswith(':re'):
-                    victims = filter(lambda v: v.attrib.get(id1, None) == id2,
-                                     victims)
+                    victims = [v for v in victims if v.attrib.get(id1, None) == id2]
                     lgr.debug("After selection based on %s was left with "
                               "%d victims" % (id1, len(victims)))
 
