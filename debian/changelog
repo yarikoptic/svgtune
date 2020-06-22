@@ -1,3 +1,10 @@
+svgtune (0.3.0-2) unstable; urgency=medium
+
+  * Completely remove mentioning of python (not python3) in debian/control
+    (Closes: #938605)
+
+ -- Yaroslav Halchenko <debian@onerussian.com>  Mon, 22 Jun 2020 11:05:03 -0400
+
 svgtune (0.3.0-1) unstable; urgency=medium
 
   * Fresh "upstream" release compatible with python3 (Closes: #956652)
