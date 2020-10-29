@@ -33,8 +33,8 @@
 from __future__ import print_function
 
 __author__ = 'Yaroslav Halchenko'
-__version__ = (0, 3, 0)
-__copyright__ = 'Copyright (c) 2009-2015 Yaroslav Halchenko'
+__version__ = (0, 3, 1)
+__copyright__ = 'Copyright (c) 2009-2020 Yaroslav Halchenko'
 __license__ = 'GPL'
 
 import os, re
@@ -135,7 +135,7 @@ def parse_cmdline():
                           version="%prog version "
                                   + ".".join([str(i) for i in __version__]))
     parser.add_option("-v", action="count", dest="verbose",
-                      help="Increase verbosity with multiple -v")
+                      help="Increase verbosity with multiple -v", default=0)
     parser.add_option("-p", "--previews", action="store_true",
                       dest="previews", help="Store preview png's")
     parser.add_option("--no-svgs", action="store_true",
@@ -189,7 +189,7 @@ def svgtune(ifile, options):
         elif cmd == '%save':
             ofile = '%s/%s.svg' % (dname, params)
             verbose(1, "Storing into %s" % ofile)
-            with file(ofile, 'w') as f:
+            with open(ofile, 'wb') as f:
                 f.write(etree.tostring(svgdoc, pretty_print=True))
             if options.previews:
                 verbose(3, "Generating preview")
