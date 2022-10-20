@@ -5,8 +5,8 @@ Maintainer: Yaroslav Halchenko <debian@onerussian.com>
 Build-Depends: cdbs, debhelper (>= 10), help2man, python3, python3-lxml
 Standards-Version: 4.5.0
 Homepage: https://github.com/yarikoptic/svgtune
-Vcs-Git: git://github.com/yarikoptic/svgtune.git -b debian
-Vcs-Browser: http://github.com/yarikoptic/svgtune
+Vcs-Git: https://github.com/yarikoptic/svgtune.git -b debian
+Vcs-Browser: https://github.com/yarikoptic/svgtune
 
 
 Package: svgtune
