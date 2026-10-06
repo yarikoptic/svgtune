@@ -299,8 +299,7 @@ def test_only_ignores_not_rendered(run, tmp_path):
     assert 'display:inline' in style(r, 'g-bottom')
     assert 'display:none' in style(r, 'g-top')
     assert 'None of the selected elements is rendered' in run(
-        "%only label=BOTTOM-gradient\n",
-                                 expect_fail=True)
+        "%only label=BOTTOM-gradient\n", expect_fail=True)
 
 
 def test_prune_self_references(run, tmp_path):
