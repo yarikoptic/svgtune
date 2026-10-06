@@ -31,7 +31,7 @@
  On Debian system see /usr/share/common-licenses/GPL for the full license.
 """
 __author__ = 'Yaroslav Halchenko'
-__version__ = (0, 3, 1)
+__version__ = (0, 4, 0)
 __copyright__ = 'Copyright (c) 2009-2026 Yaroslav Halchenko'
 __license__ = 'GPL'
 
