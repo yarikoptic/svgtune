@@ -35,6 +35,7 @@ __version__ = (0, 4, 0)
 __copyright__ = 'Copyright (c) 2009-2026 Yaroslav Halchenko'
 __license__ = 'GPL'
 
+import math
 import os, re
 import subprocess
 from lxml import etree
@@ -67,6 +68,9 @@ NON_RENDERED = set('{%s}%s' % (NS['svg'], t) for t in (
     'defs', 'metadata', 'title', 'desc', 'style', 'script', 'symbol',
     'clipPath', 'mask', 'marker', 'pattern', 'linearGradient',
     'radialGradient', 'filter', 'font', 'font-face', 'cursor', 'view'))
+
+# Elements which render (a copy of) the element they refer to
+CLONE_ELEMENTS = set('{%s}%s' % (NS['svg'], t) for t in ('use', 'feImage'))
 
 # Elements within which text (tail of children) matters
 TEXT_ELEMENTS = set('{%s}%s' % (NS['svg'], t) for t in (
@@ -252,8 +256,9 @@ def remove_element(el):
     """
     parent = el.getparent()
     for keep in [e for e in el.iterdescendants() if e.tag in DEFS_KEEP]:
-        keep.tail = None
-        el.addprevious(keep)
+        if el in keep.iterancestors():  # i.e. not moved already with a parent
+            keep.tail = None
+            el.addprevious(keep)
     tail = el.tail
     if tail and (tail.strip() or parent.tag in TEXT_ELEMENTS):
         prev = el.getprevious()
@@ -268,17 +273,14 @@ def only(svg, victims):
     """Leave visible only the victims (and their ancestors)
 
     All other renderable elements which are siblings of the victims or of
-    their ancestors get hidden, or moved into <defs> if referenced (e.g. by a
-    clone, which would get hidden otherwise as well).  The victims and their
-    ancestors get shown.  Anything within the victims is left untouched.
+    their ancestors get hidden, or moved into <defs> if a visible clone
+    refers to them (which would get hidden otherwise as well).  The victims
+    and their ancestors get shown.  Anything within the victims is left
+    untouched.  Victims which are not rendered (e.g. in <defs>) are ignored.
     """
     rendered = set(
         v for v in victims
         if is_rendered(v) and all(is_rendered(a) for a in v.iterancestors()))
-    for v in victims:
-        if v not in rendered:
-            lgr.warning("Ignoring %s id=%s which is not rendered directly"
-                        % (etree.QName(v).localname, v.get('id')))
     if not rendered:
         raise ValueError("None of the selected elements is rendered")
     # those within other victims are left untouched
@@ -290,15 +292,20 @@ def only(svg, victims):
     for el in victims | ancestors:
         if el is not svg:
             change_attr(el, 'style', 'display:inline')
+    # in document order, so the result does not change from run to run
+    to_hide = [e for e in svg.iter(etree.Element)
+               if e.getparent() in ancestors and e not in victims
+               and e not in ancestors and is_rendered(e)]
+    hidden = set(e for h in to_hide for e in h.iter())
     refs = collect_refs(svg)
-    for el in ancestors:
-        for child in list(el):
-            if (child not in victims and child not in ancestors
-                    and is_rendered(child)):
-                if child.get('id') in refs:
-                    get_defs(svg).append(child)
-                else:
-                    change_attr(child, 'style', 'display:none')
+    for el in to_hide:
+        if any(r.tag in CLONE_ELEMENTS and r not in hidden and not any(
+                get_style(a, 'display') == 'none'
+                for a in [r] + list(r.iterancestors()))
+               for r in refs.get(el.get('id'), ())):
+            get_defs(svg).append(el)
+        else:
+            change_attr(el, 'style', 'display:none')
 
 
 def get_defs(svg):
@@ -368,7 +375,12 @@ def prune(svg):
 def get_viewbox(svg):
     """Return viewBox [x, y, w, h] of the document, or None if there is none"""
     vb = svg.get('viewBox')
-    return [float(x) for x in re.split(r'[\s,]+', vb.strip())] if vb else None
+    if not vb:
+        return None
+    vb = [float(x) for x in re.split(r'[\s,]+', vb.strip())]
+    if len(vb) != 4 or vb[2] <= 0 or vb[3] <= 0:
+        raise ValueError("Cannot handle viewBox %r" % svg.get('viewBox'))
+    return vb
 
 
 def fmt(v):
@@ -424,10 +436,13 @@ def query_bboxes(svgdoc, elements, svgfile):
             except ValueError:
                 pass
     x0, y0 = vb[:2] if vb else (0., 0.)
+    # Inkscape reports only 6 significant digits, so do not pretend more
+    # (relative to the size of the document)
+    ndigits = max(0, 5 - int(math.floor(math.log10(max(vb[2:]))))) \
+        if vb else 3
 
     def r(v):
-        # Inkscape reports only 6 significant digits; + 0. to avoid -0.0
-        return round(v, 3) + 0.
+        return round(v, ndigits) + 0.  # + 0. to avoid -0.0
     return [None if b is None else
             (r(b[0] + x0), r(b[1] + y0), r(b[2]), r(b[3]))
             for b in map(found.get, ids)]
@@ -438,15 +453,17 @@ def set_viewbox(svg, x, y, w, h):
     if w <= 0 or h <= 0:
         raise ValueError("Got non-positive size of the area: %s x %s" % (w, h))
     vb = get_viewbox(svg)
-    for attr, new, old in (('width', w, vb and vb[2]),
-                           ('height', h, vb and vb[3])):
-        m = LENGTH_RE.match(svg.get(attr, ''))
-        if not vb:
-            # user units were px
-            svg.set(attr, fmt(new))
-        elif m:
-            # absolute (not % or missing) size
-            svg.set(attr, fmt(float(m.group(1)) * new / old) + m.group(2))
+    if vb is None:
+        # user units were px
+        svg.set('width', fmt(w))
+        svg.set('height', fmt(h))
+    else:
+        # scale absolute (not % or missing) size
+        for attr, new, old in (('width', w, vb[2]), ('height', h, vb[3])):
+            m = LENGTH_RE.match(svg.get(attr, ''))
+            if m:
+                svg.set(attr,
+                        fmt(float(m.group(1)) * new / old) + m.group(2))
     svg.set('viewBox', ' '.join(fmt(v) for v in (x, y, w, h)))
     # pages of multi-page documents (Inkscape >= 1.2) would no longer match
     for page in list(svg.iter('{%s}page' % NS['inkscape'])):
@@ -633,7 +650,11 @@ def svgtune(ifile, options):
                     func(victim)
     except (ValueError, RuntimeError, OSError, re.error,
             etree.LxmlError) as e:
-        raise SystemExit("%s:%d: %s" % (ifile, lineno, e))
+        if options.verbose >= 4:
+            raise
+        raise SystemExit(
+            ("%s:%d: %s" % (ifile, lineno, e)) if lineno else
+            ("%s: %s" % (ifile, e)))
 
 
 if __name__ == "__main__":

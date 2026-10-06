@@ -80,16 +80,16 @@ changes::
 %only <identifier> [<identifier> ...]
   leave visible only the matching elements: all their siblings, and siblings
   of their ancestors, get hidden (display:none), while they and their
-  ancestors get shown (display:inline).  Hidden elements which are referenced
-  (e.g. originals of clones) are moved into <defs> instead, so references
-  keep working.  Anything within the matching elements is left untouched.
+  ancestors get shown (display:inline).  Elements which visible clones refer
+  to are moved into <defs> instead, so the clones keep showing (use %reset to
+  show them again).  Anything within the matching elements is left untouched.
   Matching elements which are not rendered directly (e.g. within <defs>) are
   ignored.
 %prune
   remove hidden (display:none) elements, unless they (or any of their
   descendants) are referenced from elsewhere (e.g. by a clone), and then
   unused definitions (gradients, markers, etc).  <style>, <script>, <font>,
-  and <color-profile> elements are kept.
+  <font-face>, and <color-profile> elements are kept.
 %crop [<identifier> ...] [margin=<m>]
   crop the page to the bounding box of the matching elements or, if none
   given, of the visible drawing.  Matching elements are used even if hidden,

@@ -298,7 +298,8 @@ def test_only_ignores_not_rendered(run, tmp_path):
     assert by_id(r, 'grad3').get('style') is None
     assert 'display:inline' in style(r, 'g-bottom')
     assert 'display:none' in style(r, 'g-top')
-    assert 'not rendered' in run("%only label=BOTTOM-gradient\n",
+    assert 'None of the selected elements is rendered' in run(
+        "%only label=BOTTOM-gradient\n",
                                  expect_fail=True)
 
 
@@ -428,7 +429,7 @@ def test_errors_report_line(run):
     assert 'fig.svgtune:3: Cannot find any victim' in err
     assert 'Traceback' not in err
     err = run("%crop margin=5mm\n", expect_fail=True)
-    assert err.startswith('fig.svgtune:1: ') or 'fig.svgtune:1: ' in err
+    assert 'fig.svgtune:1: ' in err
     assert 'Traceback' not in err
     err = run("%only id=r1\n%crop\n", expect_fail=True,
               env={'INKSCAPE': 'nonexistent-inkscape'})
@@ -494,3 +495,74 @@ def test_options(run, tmp_path):
     run("%options previews\n%save first\n", args=['--no-svgs'],
         env={'INKSCAPE': str(fake)})
     assert os.listdir(str(tmp_path / 'fig_tuned')) == ['first_preview.png']
+    # .svg within a directory name
+    os.mkdir(str(tmp_path / 'a.svg.d'))
+    shutil.copy(str(tmp_path / 'fig.svg'), str(tmp_path / 'a.svg.d'))
+    run("%file a.svg.d/fig.svg\n%save first\n", args=['-p'],
+        env={'INKSCAPE': str(fake)})
+    assert sorted(os.listdir(str(tmp_path / 'a.svg.d' / 'fig_tuned'))) == \
+        ['first.svg', 'first_preview.png']
+
+
+def test_errors_file_level(tmp_path):
+    res = subprocess.run([sys.executable, SVGTUNE, 'nonexistent.svgtune'],
+                         cwd=str(tmp_path), stderr=subprocess.PIPE,
+                         universal_newlines=True)
+    assert res.returncode
+    assert res.stderr.startswith('nonexistent.svgtune: ')
+
+
+def test_invalid_viewbox(run, tmp_path):
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        'viewBox="0 0 200 100"', 'viewBox="0 0 200"'))
+    err = run("%crop box=1,2,3,4\n", expect_fail=True)
+    assert 'fig.svgtune:1: Cannot handle viewBox' in err
+
+
+def test_only_moves_only_originals_of_visible_clones(run, tmp_path):
+    # clone2 (of g-top-extra) gets hidden as well, and r2 is referenced
+    # only by something which is not a clone, so nothing gets moved
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<g id="g-bottom"',
+        '<use id="clone2" xlink:href="#g-top-extra"/>'
+        '<path id="connector" inkscape:connection-start="#r3" d="M0,0"/>'
+        '<g id="g-bottom"'))
+    r = run("%only id=r1\n%save r1\n")('r1')
+    assert by_id(r, 'g-top-extra').getparent().get('id') == 'layer1'
+    assert 'display:none' in style(r, 'g-top-extra')
+    assert by_id(r, 'g-bottom').getparent().get('id') == 'layer1'
+    assert 'display:none' in style(r, 'g-bottom')
+
+
+def test_only_moves_in_document_order(run, tmp_path):
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<text id="text1"',
+        '<use id="c1" xlink:href="#g-bottom"/>'
+        '<use id="c2" xlink:href="#g-top-extra"/>'
+        '<use id="c3" xlink:href="#layer2"/><text id="text1"'))
+    r = run("%only id=g-top id=c1 id=c2 id=c3\n%save x\n")('x')
+    defs = by_id(r, 'defs1')
+    assert [e.get('id') for e in defs][-3:] == \
+        ['g-top-extra', 'g-bottom', 'layer2']
+
+
+def test_prune_keeps_nested_fonts(run, tmp_path):
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<rect id="r4"',
+        '<font id="font1"><font-face id="ff1" font-family="F"/></font>'
+        '<rect id="r4"'))
+    r = run("g id=g-bottom style=display:none\n%prune\n%save x\n")('x')
+    assert by_id(r, 'g-bottom') is None
+    assert by_id(r, 'ff1').getparent().get('id') == 'font1'
+
+
+@needs_inkscape
+def test_crop_small_units(run, tmp_path):
+    # precision is relative to the size of the document
+    (tmp_path / 'fig.svg').write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="10cm" height="10cm" '
+        'viewBox="0 0 1 1"><rect id="r" x="0.12345" y="0.23456" '
+        'width="0.2" height="0.1"/></svg>')
+    r = run("%crop id=r\n%save r\n")('r')
+    assert r.get('viewBox') == '0.12345 0.23456 0.2 0.1'
+    assert r.get('width') == '2cm'
