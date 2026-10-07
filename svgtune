@@ -38,7 +38,6 @@ __license__ = 'GPL'
 import math
 import os, re
 import subprocess
-import tempfile
 from lxml import etree
 from optparse import OptionParser
 
@@ -70,17 +69,22 @@ NON_RENDERED = set('{%s}%s' % (NS['svg'], t) for t in (
     'clipPath', 'mask', 'marker', 'pattern', 'linearGradient',
     'radialGradient', 'filter', 'font', 'font-face', 'cursor', 'view'))
 
+# Elements which render (a copy of) the element they refer to
+CLONE_ELEMENTS = set('{%s}%s' % (NS['svg'], t) for t in ('use', 'feImage'))
+
 # Elements within which text (tail of children) matters
 TEXT_ELEMENTS = set('{%s}%s' % (NS['svg'], t) for t in (
     'text', 'tspan', 'textPath', 'a', 'flowRoot', 'flowPara', 'flowSpan',
     'flowDiv'))
 
-# Children of <defs> which have global effect, thus never pruned
-DEFS_KEEP = set('{%s}%s' % (NS['svg'], t) for t in ('style', 'script'))
+# Definitions which have global effect or are referenced not by #id (but
+# e.g. by font-family), thus never pruned
+DEFS_KEEP = set('{%s}%s' % (NS['svg'], t) for t in (
+    'style', 'script', 'font', 'font-face', 'color-profile'))
 
-# Pixels per unit, as Inkscape (and CSS) define them
-UNITS_PX = {'': 1., 'px': 1., 'pt': 96 / 72., 'pc': 16., 'mm': 96 / 25.4,
-            'cm': 96 / 2.54, 'q': 96 / 101.6, 'in': 96.}
+# Absolute length, e.g. '210mm'
+LENGTH_RE = re.compile(
+    r'^\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-Z]*)\s*$')
 
 # Anything which looks like a reference (#id) in attribute values or CSS
 REF_RE = re.compile(r'#([^\s\'"(),;#]+)')
@@ -220,8 +224,8 @@ def find_victims(svg, elem, identifier):
 
     def matches(el):
         for attr in IDENTIFIER_ATTRS[key]:
-            v = el.get(attr)
-            if v is not None and (regexp.search(v) if regexp else v == value):
+            if regexp.search(el.get(attr, '')) if regexp \
+                    else el.get(attr) == value:
                 return True
         return False
 
@@ -247,13 +251,14 @@ def is_rendered(el):
 def remove_element(el):
     """Remove element from the tree
 
-    Meaningful text after it, and <style>/<script> elements (which have
-    global effect) within it, are preserved.
+    Meaningful text after it, and global definitions (DEFS_KEEP) within it,
+    are preserved.
     """
     parent = el.getparent()
     for keep in [e for e in el.iterdescendants() if e.tag in DEFS_KEEP]:
-        keep.tail = None
-        el.addprevious(keep)
+        if el in keep.iterancestors():  # i.e. not moved already with a parent
+            keep.tail = None
+            el.addprevious(keep)
     tail = el.tail
     if tail and (tail.strip() or parent.tag in TEXT_ELEMENTS):
         prev = el.getprevious()
@@ -268,29 +273,48 @@ def only(svg, victims):
     """Leave visible only the victims (and their ancestors)
 
     All other renderable elements which are siblings of the victims or of
-    their ancestors get hidden.  The victims and their ancestors get shown.
+    their ancestors get hidden, or moved into <defs> if a visible clone
+    refers to them (which would get hidden otherwise as well).  The victims
+    and their ancestors get shown.  Anything within the victims is left
+    untouched.  Victims which are not rendered (e.g. in <defs>) are ignored.
     """
     rendered = set(
         v for v in victims
         if is_rendered(v) and all(is_rendered(a) for a in v.iterancestors()))
-    for v in victims:
-        if v not in rendered:
-            lgr.warning("Ignoring %s id=%s which is not rendered directly"
-                        % (etree.QName(v).localname, v.get('id')))
     if not rendered:
         raise ValueError("None of the selected elements is rendered")
-    victims = rendered
+    # those within other victims are left untouched
+    victims = set(v for v in rendered
+                  if not any(a in rendered for a in v.iterancestors()))
     ancestors = set()
     for v in victims:
         ancestors.update(v.iterancestors())
     for el in victims | ancestors:
         if el is not svg:
             change_attr(el, 'style', 'display:inline')
-    for el in ancestors - victims:
-        for child in el:
-            if (child not in victims and child not in ancestors
-                    and is_rendered(child)):
-                change_attr(child, 'style', 'display:none')
+    # in document order, so the result does not change from run to run
+    to_hide = [e for e in svg.iter(etree.Element)
+               if e.getparent() in ancestors and e not in victims
+               and e not in ancestors and is_rendered(e)]
+    hidden = set(e for h in to_hide for e in h.iter())
+    refs = collect_refs(svg)
+    for el in to_hide:
+        if any(r.tag in CLONE_ELEMENTS and r not in hidden and not any(
+                get_style(a, 'display') == 'none'
+                for a in [r] + list(r.iterancestors()))
+               for r in refs.get(el.get('id'), ())):
+            get_defs(svg).append(el)
+        else:
+            change_attr(el, 'style', 'display:none')
+
+
+def get_defs(svg):
+    """Return (the first) <defs> of the document, creating it if needed"""
+    defs = svg.find('{%s}defs' % NS['svg'])
+    if defs is None:
+        defs = etree.Element('{%s}defs' % NS['svg'])
+        svg.insert(0, defs)
+    return defs
 
 
 def collect_refs(svg):
@@ -348,41 +372,15 @@ def prune(svg):
     verbose(2, "Pruned %d elements" % nremoved)
 
 
-def parse_length(s):
-    """Parse a length (e.g. '210mm') into a (value, unit) pair"""
-    m = re.match(r'^\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)'
-                 r'\s*([a-zA-Z%]*)\s*$', s)
-    if not m or m.group(2).lower() not in UNITS_PX:
-        raise ValueError("Cannot handle length %r" % s)
-    return float(m.group(1)), m.group(2)
-
-
-def get_length(svg, attr):
-    """Return absolute length (value, unit) of the attribute, if there is"""
-    v = svg.get(attr)
-    if not v or v.strip().endswith('%'):
-        return None
-    return parse_length(v)
-
-
-def get_geometry(svg):
-    """Return viewBox [x, y, w, h], and width and height as (value, unit)
-
-    If there is no viewBox, it is the one implied by width and height.
-    Without (absolute) width or height, user units are px.
-    """
-    width = get_length(svg, 'width')
-    height = get_length(svg, 'height')
+def get_viewbox(svg):
+    """Return viewBox [x, y, w, h] of the document, or None if there is none"""
     vb = svg.get('viewBox')
-    if vb:
-        vb = [float(x) for x in re.split(r'[\s,]+', vb.strip())]
-    elif width and height:
-        vb = [0., 0.,
-              width[0] * UNITS_PX[width[1].lower()],
-              height[0] * UNITS_PX[height[1].lower()]]
-    else:
-        raise ValueError("Need viewBox, or width and height of the document")
-    return vb, width or (vb[2], ''), height or (vb[3], '')
+    if not vb:
+        return None
+    vb = [float(x) for x in re.split(r'[\s,]+', vb.strip())]
+    if len(vb) != 4 or vb[2] <= 0 or vb[3] <= 0:
+        raise ValueError("Cannot handle viewBox %r" % svg.get('viewBox'))
+    return vb
 
 
 def fmt(v):
@@ -399,72 +397,74 @@ def query_bboxes(svgdoc, elements, svgfile):
     groups) get None.
     """
     svg = svgdoc.getroot()
+    vb = get_viewbox(svg)
     tmpid_elements = []
     for i, el in enumerate(elements):
         if not el.get('id'):
             el.set('id', 'svgtune-tmp-%d' % i)
             tmpid_elements.append(el)
     ids = [el.get('id') for el in elements]
-    # store next to the original file so relative links (images) still work
-    fd, tmpfile = tempfile.mkstemp(
-        prefix='.svgtune-', suffix='.svg',
-        dir=os.path.dirname(os.path.abspath(svgfile)))
+    size = {a: svg.get(a) for a in ('width', 'height')}
     try:
-        try:
-            with os.fdopen(fd, 'wb') as f:
-                write_svg(svgdoc, f)
-        finally:
-            for el in tmpid_elements:
-                del el.attrib['id']
-        verbose(3, "Querying bounding boxes using Inkscape")
-        res = subprocess.run([INKSCAPE, '--query-all', tmpfile],
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if vb:
+            # so Inkscape reports in user units (relative to viewBox origin)
+            svg.set('width', fmt(vb[2]))
+            svg.set('height', fmt(vb[3]))
+        data = etree.tostring(svgdoc, xml_declaration=True, encoding='UTF-8')
     finally:
-        os.unlink(tmpfile)
+        for el in tmpid_elements:
+            del el.attrib['id']
+        for a, v in size.items():
+            if v is None:
+                svg.attrib.pop(a, None)
+            else:
+                svg.set(a, v)
+    verbose(3, "Querying bounding boxes using Inkscape")
+    # from the directory of the file, so relative links (images) still work
+    res = subprocess.run([INKSCAPE, '--pipe', '--query-all'], input=data,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         cwd=os.path.dirname(os.path.abspath(svgfile)))
     if res.returncode:
         raise RuntimeError("%s --query-all failed: %s"
                            % (INKSCAPE, res.stderr.decode(errors='replace')))
-    px = {}
+    found = {}
     for line in res.stdout.decode().splitlines():
         rec = line.rsplit(',', 4)
         if len(rec) == 5:
             try:
-                px[rec[0]] = [float(x) for x in rec[1:]]
+                found[rec[0]] = [float(x) for x in rec[1:]]
             except ValueError:
                 pass
-    # Inkscape reports in px relative to the top-left corner of the page
-    vb, width, height = get_geometry(svg)
-    sx = width[0] * UNITS_PX[width[1].lower()] / vb[2]
-    sy = height[0] * UNITS_PX[height[1].lower()] / vb[3]
-    if abs(sx - sy) > 1e-6 * max(sx, sy):
-        raise ValueError(
-            "Cannot handle documents where aspect ratio of width/height "
-            "differs from the one of the viewBox")
-    # Inkscape reports only 6 significant digits, so round to ~0.01px to not
-    # carry its rounding errors into resulting numbers
-    ndigits = max(0, int(math.ceil(math.log10(100 * max(sx, sy)))))
+    x0, y0 = vb[:2] if vb else (0., 0.)
+    # Inkscape reports only 6 significant digits, so do not pretend more
+    # (relative to the size of the document)
+    ndigits = max(0, 5 - int(math.floor(math.log10(max(vb[2:]))))) \
+        if vb else 3
 
     def r(v):
         return round(v, ndigits) + 0.  # + 0. to avoid -0.0
-    bboxes = []
-    for id_ in ids:
-        b = px.get(id_)
-        bboxes.append(None if b is None else
-                      (r(b[0] / sx + vb[0]), r(b[1] / sy + vb[1]),
-                       r(b[2] / sx), r(b[3] / sy)))
-    return bboxes
+    return [None if b is None else
+            (r(b[0] + x0), r(b[1] + y0), r(b[2]), r(b[3]))
+            for b in map(found.get, ids)]
 
 
 def set_viewbox(svg, x, y, w, h):
-    """Change visible area of the document, keeping the units of its size"""
+    """Change visible area of the document, keeping its scale and units"""
     if w <= 0 or h <= 0:
         raise ValueError("Got non-positive size of the area: %s x %s" % (w, h))
-    vb, width, height = get_geometry(svg)
+    vb = get_viewbox(svg)
+    if vb is None:
+        # user units were px
+        svg.set('width', fmt(w))
+        svg.set('height', fmt(h))
+    else:
+        # scale absolute (not % or missing) size
+        for attr, new, old in (('width', w, vb[2]), ('height', h, vb[3])):
+            m = LENGTH_RE.match(svg.get(attr, ''))
+            if m:
+                svg.set(attr,
+                        fmt(float(m.group(1)) * new / old) + m.group(2))
     svg.set('viewBox', ' '.join(fmt(v) for v in (x, y, w, h)))
-    if get_length(svg, 'width'):
-        svg.set('width', fmt(w * width[0] / vb[2]) + width[1])
-    if get_length(svg, 'height'):
-        svg.set('height', fmt(h * height[0] / vb[3]) + height[1])
     # pages of multi-page documents (Inkscape >= 1.2) would no longer match
     for page in list(svg.iter('{%s}page' % NS['inkscape'])):
         page.getparent().remove(page)
@@ -543,105 +543,118 @@ def parse_cmdline():
 def svgtune(ifile, options):
     svg = svgdoc = svgfile = dname = None
 
-    for line_ in open(ifile).readlines():
-        line = line_.strip()
-        if line.startswith('#') or line == '':
-            continue
-        if line.rstrip() == '%exit':
-            break
-
-        # parse out first element
-        cmd, _, params = line.partition(' ')
-        params = params.strip()
-        if not params and cmd not in ('%reset', '%crop', '%prune'):
-            raise ValueError("Each line must be 'command parameters'. "
-                             "Got %r" % line)
-
-        if cmd == '%file':
-            svgfile = params
-            svg, svgdoc, dname = load_svg(svgfile)
-            continue
-        elif cmd == "%options":
-            process_options(params, options)
-            continue
-
-        # We must have file loaded by now
-        if svg is None:
-            svgfile = os.path.splitext(ifile)[0] + '.svg'
-            try:
-                svg, svgdoc, dname = load_svg(svgfile)
-            except Exception as e:
-                raise RuntimeError(
-                    "Tried to load from %s but failed due to %s.\n"
-                    "Please provide %%file directive to load the file prior %s "
-                    "or have .svg file with the same name as .svgtune."
-                    % (svgfile, e, cmd))
-
-        if cmd == '%save':
-            ofile = '%s/%s.svg' % (dname, params)
-            verbose(1, "Storing into %s" % ofile)
-            with open(ofile, 'wb') as f:
-                write_svg(svgdoc, f)
-            if options.previews:
-                verbose(3, "Generating preview")
-                subprocess.call(
-                    [INKSCAPE, '--export-type=png', '--export-dpi=300',
-                     '--export-filename=%s' % ofile.replace('.svg', '_preview.png'),
-                     ofile],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if options.nosvgs:
-                verbose(4, "Removing generated svg")
-                os.remove(ofile)
-            continue
-        elif cmd == '%reset':
-            verbose(2, "Reloading %s" % svgfile)
-            svg, svgdoc, dname = load_svg(svgfile)
-            continue
-        elif cmd == '%only':
-            only(svg, [v for identifier in params.split()
-                       for v in find_victims(svg, 'any', identifier)])
-            continue
-        elif cmd == '%crop':
-            crop(svgdoc, params, svgfile)
-            continue
-        elif cmd == '%prune':
-            prune(svg)
-            continue
-
-        #
-        # Figure out the victims for changes -- victims
-        if cmd == 'layers':
-            changes = params
-            victims = svg.findall('.//{%s}g[@{%s}groupmode="layer"]'
-                                  % (NS['svg'], NS['inkscape']))
-        elif cmd in ['layer', 'g', 'text', 'any']:
-            # parse out first element
-            identifier, changes = split2(params,
-                       "For each layer or g you must list id or label + changes")
-            victims = find_victims(svg, cmd, identifier)
-        else:
-            raise ValueError("Unknown command '%s'." % cmd)
-
-        #
-        # Figure out the actual changes to take and do them
-        for change in changes.split(' '):
-            if change == '':
+    lineno = 0
+    try:
+        for lineno, line_ in enumerate(open(ifile), 1):
+            line = line_.strip()
+            if line.startswith('#') or line == '':
                 continue
-            attr, values = split2(
-                change,
-                'Each change should be listed as attribute=value',
-                '=')
-            if attr == 'style':
-                func = lambda vic: change_attr(vic, attr, values)
-            elif attr == 'transform':
-                # prepend, so it is applied in the coordinates of the parent
-                func = lambda vic: vic.set(
-                    attr, (values + ' ' + vic.get(attr, '')).strip())
-            else:
-                raise ValueError("Don't yet handle attribute %s" % attr)
+            if line.rstrip() == '%exit':
+                break
 
-            for victim in victims:
-                func(victim)
+            # parse out first element
+            cmd, _, params = line.partition(' ')
+            params = params.strip()
+            if cmd in ('%reset', '%prune'):
+                if params:
+                    raise ValueError("%s takes no parameters" % cmd)
+            elif not params and cmd != '%crop':
+                raise ValueError("Each line must be 'command parameters'. "
+                                 "Got %r" % line)
+
+            if cmd == '%file':
+                svgfile = params
+                svg, svgdoc, dname = load_svg(svgfile)
+                continue
+            elif cmd == "%options":
+                process_options(params, options)
+                continue
+
+            # We must have file loaded by now
+            if svg is None:
+                svgfile = os.path.splitext(ifile)[0] + '.svg'
+                try:
+                    svg, svgdoc, dname = load_svg(svgfile)
+                except Exception as e:
+                    raise RuntimeError(
+                        "Tried to load from %s but failed due to %s.\n"
+                        "Please provide %%file directive to load the file prior %s "
+                        "or have .svg file with the same name as .svgtune."
+                        % (svgfile, e, cmd))
+
+            if cmd == '%save':
+                ofile = '%s/%s.svg' % (dname, params)
+                verbose(1, "Storing into %s" % ofile)
+                with open(ofile, 'wb') as f:
+                    write_svg(svgdoc, f)
+                if options.previews:
+                    verbose(3, "Generating preview")
+                    subprocess.call(
+                        [INKSCAPE, '--export-type=png', '--export-dpi=300',
+                         '--export-filename=%s_preview.png'
+                         % os.path.splitext(ofile)[0],
+                         ofile],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if options.nosvgs:
+                    verbose(4, "Removing generated svg")
+                    os.remove(ofile)
+                continue
+            elif cmd == '%reset':
+                verbose(2, "Reloading %s" % svgfile)
+                svg, svgdoc, dname = load_svg(svgfile)
+                continue
+            elif cmd == '%only':
+                only(svg, [v for identifier in params.split()
+                           for v in find_victims(svg, 'any', identifier)])
+                continue
+            elif cmd == '%crop':
+                crop(svgdoc, params, svgfile)
+                continue
+            elif cmd == '%prune':
+                prune(svg)
+                continue
+
+            #
+            # Figure out the victims for changes -- victims
+            if cmd == 'layers':
+                changes = params
+                victims = svg.findall('.//{%s}g[@{%s}groupmode="layer"]'
+                                      % (NS['svg'], NS['inkscape']))
+            elif cmd in ['layer', 'g', 'text', 'any']:
+                # parse out first element
+                identifier, changes = split2(params,
+                           "For each layer or g you must list id or label + changes")
+                victims = find_victims(svg, cmd, identifier)
+            else:
+                raise ValueError("Unknown command '%s'." % cmd)
+
+            #
+            # Figure out the actual changes to take and do them
+            for change in changes.split(' '):
+                if change == '':
+                    continue
+                attr, values = split2(
+                    change,
+                    'Each change should be listed as attribute=value',
+                    '=')
+                if attr == 'style':
+                    func = lambda vic: change_attr(vic, attr, values)
+                elif attr == 'transform':
+                    # prepend, so it is applied in the coordinates of the parent
+                    func = lambda vic: vic.set(
+                        attr, (values + ' ' + vic.get(attr, '')).strip())
+                else:
+                    raise ValueError("Don't yet handle attribute %s" % attr)
+
+                for victim in victims:
+                    func(victim)
+    except (ValueError, RuntimeError, OSError, re.error,
+            etree.LxmlError) as e:
+        if options.verbose >= 4:
+            raise
+        raise SystemExit(
+            ("%s:%d: %s" % (ifile, lineno, e)) if lineno else
+            ("%s: %s" % (ifile, e)))
 
 
 if __name__ == "__main__":

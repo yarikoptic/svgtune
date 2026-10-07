@@ -2,6 +2,7 @@ name: Tests
 
 on:
   push:
+    branches: [master]
   pull_request:
 
 permissions:
@@ -17,5 +18,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             inkscape python3-lxml python3-pytest
+      - name: Show versions
+        run: inkscape --version
       - name: Run tests
         run: python3 -m pytest -v tests

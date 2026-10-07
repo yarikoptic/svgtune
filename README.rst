@@ -39,8 +39,9 @@ or use python regular expressions to match sets of those::
 
 Besides 'layers', 'layer' and 'g', 'text' and 'any' (any element) can be
 used to select elements.  Without a regular expression, a single element must
-match.  Since parameters are separated by spaces, use a regular expression to
-match values with spaces, e.g. ``label:re=^Layer.1$``.
+match.  Since parameters are separated by spaces, values cannot contain
+spaces: use a regular expression to match e.g. ``label:re=^Layer.1$``, and
+commas in transforms, e.g. ``transform=translate(10,20)``.
 
 Changes could be done to
 
@@ -79,18 +80,21 @@ changes::
 %only <identifier> [<identifier> ...]
   leave visible only the matching elements: all their siblings, and siblings
   of their ancestors, get hidden (display:none), while they and their
-  ancestors get shown (display:inline).  Anything within the matching
-  elements is left untouched.  Matching elements which are not rendered
-  directly (e.g. within <defs>) are ignored.
+  ancestors get shown (display:inline).  Elements which visible clones refer
+  to are moved into <defs> instead, so the clones keep showing (use %reset to
+  show them again).  Anything within the matching elements is left untouched.
+  Matching elements which are not rendered directly (e.g. within <defs>) are
+  ignored.
 %prune
   remove hidden (display:none) elements, unless they (or any of their
   descendants) are referenced from elsewhere (e.g. by a clone), and then
-  unused definitions (gradients, markers, etc).  <style> and <script>
-  elements are kept.
+  unused definitions (gradients, markers, etc).  <style>, <script>, <font>,
+  <font-face>, and <color-profile> elements are kept.
 %crop [<identifier> ...] [margin=<m>]
   crop the page to the bounding box of the matching elements or, if none
   given, of the visible drawing.  Matching elements are used even if hidden,
-  so e.g. a rectangle on a hidden layer could serve as a frame to crop to.
+  so e.g. a rectangle on a hidden layer could serve as a frame to crop to
+  (crop before ``%prune``, which would remove it).
   Bounding boxes are computed by Inkscape (``inkscape --query-all``), so
   text is accounted for properly.  Only the viewBox, width and height of the
   document change (and Inkscape pages, if any, are removed).

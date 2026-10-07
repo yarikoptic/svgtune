@@ -58,12 +58,14 @@ def run(tmp_path):
     svgfile = tmp_path / 'fig.svg'
     svgfile.write_text(SVG)
 
-    def _run(instructions, expect_fail=False):
+    def _run(instructions, expect_fail=False, args=(), env=None):
         tunefile = tmp_path / 'fig.svgtune'
         tunefile.write_text(instructions)
-        res = subprocess.run([sys.executable, SVGTUNE, str(tunefile)],
+        res = subprocess.run([sys.executable, SVGTUNE] + list(args)
+                             + [str(tunefile)],
                              cwd=str(tmp_path), stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, universal_newlines=True)
+                             stderr=subprocess.PIPE, universal_newlines=True,
+                             env=dict(os.environ, **(env or {})))
         if expect_fail:
             assert res.returncode != 0
             return res.stderr
@@ -296,8 +298,8 @@ def test_only_ignores_not_rendered(run, tmp_path):
     assert by_id(r, 'grad3').get('style') is None
     assert 'display:inline' in style(r, 'g-bottom')
     assert 'display:none' in style(r, 'g-top')
-    assert 'not rendered' in run("%only label=BOTTOM-gradient\n",
-                                 expect_fail=True)
+    assert 'None of the selected elements is rendered' in run(
+        "%only label=BOTTOM-gradient\n", expect_fail=True)
 
 
 def test_prune_self_references(run, tmp_path):
@@ -339,8 +341,227 @@ def test_crop_percentage_size(run, tmp_path):
 
 @needs_inkscape
 def test_crop_nonuniform_scale(run, tmp_path):
+    # aspect ratio of width/height differs from the one of viewBox
     (tmp_path / 'fig.svg').write_text(
         '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100" '
         'viewBox="0 0 100 100"><rect id="r1" x="10" y="10" width="20" '
         'height="10"/></svg>')
-    assert 'aspect ratio' in run("%crop id=r1\n", expect_fail=True)
+    r = run("%crop id=r1\n%save r1\n")('r1')
+    assert bbox(r) == pytest.approx([10, 10, 20, 10], abs=1e-3)
+    assert (r.get('width'), r.get('height')) == ('80', '10')
+
+
+@needs_inkscape
+def test_crop_repeatedly(run, tmp_path):
+    # used to fail due to rounding of width/height in other units
+    (tmp_path / 'fig.svg').write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="2in" height="1in" '
+        'viewBox="0 0 192 96"><rect id="r" x="10" y="10" width="20" '
+        'height="10"/></svg>')
+    load = run("%crop box=0,0,50.3,30.7\n%crop id=r margin=1\n%save r\n")
+    r = load('r')
+    assert bbox(r) == pytest.approx([9, 9, 22, 12], abs=1e-3)
+    assert r.get('width') == fmt_in(22 / 96)
+    assert r.get('height') == fmt_in(12 / 96)
+
+
+def fmt_in(v):
+    return ('%.6f' % v).rstrip('0') + 'in'
+
+
+@needs_inkscape
+def test_crop_cleans_up(run, tmp_path):
+    # elements without id get temporary ids, and Inkscape pages get removed
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<g id="g-top" ', '<g ').replace(
+        '<defs id="defs1">',
+        '<sodipodi:namedview xmlns:sodipodi="http://sodipodi.sourceforge.net/'
+        'DTD/sodipodi-0.dtd" id="nv"><inkscape:page x="0" y="0" width="200" '
+        'height="100" id="page1"/></sodipodi:namedview><defs id="defs1">'))
+    load = run("%crop label=TOP\n%save top\n")
+    out = (tmp_path / 'fig_tuned' / 'top.svg').read_text()
+    assert 'svgtune-tmp' not in out
+    assert 'inkscape:page' not in out
+    assert bbox(load('top')) == pytest.approx([20, 15, 20, 10], abs=1e-3)
+
+
+def test_only_nested_matches(run, tmp_path):
+    # matches within other matches are left untouched along with the rest
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<rect id="r1"',
+        '<g id="nested" inkscape:label="TOP-nested" style="display:none"/>'
+        '<rect id="r1"'))
+    r = run("%only label:re=^TOP\n%save top\n")('top')
+    assert style(r, 'r1') == 'fill:url(#grad2)'
+    assert style(r, 'nested') == 'display:none'
+    assert 'display:none' in style(r, 'g-bottom')
+
+
+def test_only_keeps_clone_original(run, tmp_path):
+    # original of a clone is a sibling of the selected group
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<g id="g-bottom"',
+        '<use id="clone2" xlink:href="#g-top-extra"/><g id="g-bottom"'
+    ).replace('<g id="g-top-extra"', '<g id="g-top-extra" '
+              'style="opacity:0.5"'))
+    load = run("""\
+%only id=clone2
+%save only
+%prune
+%save pruned
+""")
+    for name in ('only', 'pruned'):
+        r = load(name)
+        extra = by_id(r, 'g-top-extra')
+        assert extra.getparent().tag == '{%s}defs' % SVG_NS
+        assert 'display:none' not in style(r, 'g-top-extra')
+        assert 'display:none' not in style(r, 'r2')
+    assert 'display:none' in style(load('only'), 'g-top')
+    assert by_id(load('pruned'), 'g-top') is None
+    # not referenced anymore once clone is hidden and pruned
+    r = run("%only id=r1\n%prune\n%save r1\n")('r1')
+    assert by_id(r, 'g-top-extra') is None
+
+
+def test_errors_report_line(run):
+    err = run("# comment\n\n%only id=nonexistent\n", expect_fail=True)
+    assert 'fig.svgtune:3: Cannot find any victim' in err
+    assert 'Traceback' not in err
+    err = run("%crop margin=5mm\n", expect_fail=True)
+    assert 'fig.svgtune:1: ' in err
+    assert 'Traceback' not in err
+    err = run("%only id=r1\n%crop\n", expect_fail=True,
+              env={'INKSCAPE': 'nonexistent-inkscape'})
+    assert 'fig.svgtune:2: ' in err and 'nonexistent-inkscape' in err
+    assert 'Traceback' not in err
+
+
+def test_no_parameters_expected(run):
+    assert 'takes no parameters' in run("%reset all\n", expect_fail=True)
+    assert 'takes no parameters' in run("%prune all\n", expect_fail=True)
+
+
+def test_regex_matches_missing_attribute(run):
+    # as in 0.3.1: a regular expression matching an empty string selects
+    # also elements without the attribute
+    r = run("text label:re=^ style=opacity:0.5\n%save x\n")('x')
+    assert style(r, 'text1') == 'opacity:0.5'
+
+
+def test_layer_is_not_any_group(run):
+    assert 'Cannot find any victim' in run(
+        "layer label=TOP style=opacity:0.5\n", expect_fail=True)
+
+
+def test_href_identifiers(run, tmp_path):
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<use id="clone1"', '<use id="clone-plain" href="#r1"/><use id="clone1"'))
+    r = run("any href=#r5 style=opacity:0.1\n"
+            "any href=#r1 style=opacity:0.2\n%save x\n")('x')
+    assert style(r, 'clone1') == 'opacity:0.1'
+    assert style(r, 'clone-plain') == 'opacity:0.2'
+
+
+def test_prune_hidden_attribute_and_css_refs(run, tmp_path):
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<rect id="r2"', '<rect id="r2" display="none"').replace(
+        '*{stroke-linecap:square;}', '.x{fill:url(#grad3)}').replace(
+        ' style="fill:url(#grad3)"', ' class="x"'))
+    r = run("%prune\n%save pruned\n")('pruned')
+    assert by_id(r, 'r2') is None
+    assert by_id(r, 'grad3') is not None
+
+
+def test_prune_keeps_whitespace_in_text(run, tmp_path):
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<tspan\n    id="ts2" style="font-weight:bold">B</tspan> tail',
+        '<tspan id="ts2" style="display:none">B</tspan> <tspan>C</tspan>'))
+    r = run("%prune\n%save pruned\n")('pruned')
+    assert ''.join(by_id(r, 'text1').itertext()) == 'A C'
+
+
+def test_options(run, tmp_path):
+    # fake Inkscape which just creates the file to export to
+    fake = tmp_path / 'fake-inkscape'
+    fake.write_text('#!/bin/sh\nfor a; do case "$a" in --export-filename=*) '
+                    'touch "${a#--export-filename=}";; esac; done\n')
+    fake.chmod(0o755)
+    run("%save first\n%exit\n%save never\n", args=['-p'],
+        env={'INKSCAPE': str(fake)})
+    out = sorted(os.listdir(str(tmp_path / 'fig_tuned')))
+    assert out == ['first.svg', 'first_preview.png']
+    shutil.rmtree(str(tmp_path / 'fig_tuned'))
+    run("%options previews\n%save first\n", args=['--no-svgs'],
+        env={'INKSCAPE': str(fake)})
+    assert os.listdir(str(tmp_path / 'fig_tuned')) == ['first_preview.png']
+    # .svg within a directory name
+    os.mkdir(str(tmp_path / 'a.svg.d'))
+    shutil.copy(str(tmp_path / 'fig.svg'), str(tmp_path / 'a.svg.d'))
+    run("%file a.svg.d/fig.svg\n%save first\n", args=['-p'],
+        env={'INKSCAPE': str(fake)})
+    assert sorted(os.listdir(str(tmp_path / 'a.svg.d' / 'fig_tuned'))) == \
+        ['first.svg', 'first_preview.png']
+
+
+def test_errors_file_level(tmp_path):
+    res = subprocess.run([sys.executable, SVGTUNE, 'nonexistent.svgtune'],
+                         cwd=str(tmp_path), stderr=subprocess.PIPE,
+                         universal_newlines=True)
+    assert res.returncode
+    assert res.stderr.startswith('nonexistent.svgtune: ')
+
+
+def test_invalid_viewbox(run, tmp_path):
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        'viewBox="0 0 200 100"', 'viewBox="0 0 200"'))
+    err = run("%crop box=1,2,3,4\n", expect_fail=True)
+    assert 'fig.svgtune:1: Cannot handle viewBox' in err
+
+
+def test_only_moves_only_originals_of_visible_clones(run, tmp_path):
+    # clone2 (of g-top-extra) gets hidden as well, and r2 is referenced
+    # only by something which is not a clone, so nothing gets moved
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<g id="g-bottom"',
+        '<use id="clone2" xlink:href="#g-top-extra"/>'
+        '<path id="connector" inkscape:connection-start="#r3" d="M0,0"/>'
+        '<g id="g-bottom"'))
+    r = run("%only id=r1\n%save r1\n")('r1')
+    assert by_id(r, 'g-top-extra').getparent().get('id') == 'layer1'
+    assert 'display:none' in style(r, 'g-top-extra')
+    assert by_id(r, 'g-bottom').getparent().get('id') == 'layer1'
+    assert 'display:none' in style(r, 'g-bottom')
+
+
+def test_only_moves_in_document_order(run, tmp_path):
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<text id="text1"',
+        '<use id="c1" xlink:href="#g-bottom"/>'
+        '<use id="c2" xlink:href="#g-top-extra"/>'
+        '<use id="c3" xlink:href="#layer2"/><text id="text1"'))
+    r = run("%only id=g-top id=c1 id=c2 id=c3\n%save x\n")('x')
+    defs = by_id(r, 'defs1')
+    assert [e.get('id') for e in defs][-3:] == \
+        ['g-top-extra', 'g-bottom', 'layer2']
+
+
+def test_prune_keeps_nested_fonts(run, tmp_path):
+    (tmp_path / 'fig.svg').write_text(SVG.replace(
+        '<rect id="r4"',
+        '<font id="font1"><font-face id="ff1" font-family="F"/></font>'
+        '<rect id="r4"'))
+    r = run("g id=g-bottom style=display:none\n%prune\n%save x\n")('x')
+    assert by_id(r, 'g-bottom') is None
+    assert by_id(r, 'ff1').getparent().get('id') == 'font1'
+
+
+@needs_inkscape
+def test_crop_small_units(run, tmp_path):
+    # precision is relative to the size of the document
+    (tmp_path / 'fig.svg').write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="10cm" height="10cm" '
+        'viewBox="0 0 1 1"><rect id="r" x="0.12345" y="0.23456" '
+        'width="0.2" height="0.1"/></svg>')
+    r = run("%crop id=r\n%save r\n")('r')
+    assert r.get('viewBox') == '0.12345 0.23456 0.2 0.1'
+    assert r.get('width') == '2cm'
