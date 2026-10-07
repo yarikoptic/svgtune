@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+# emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
+# vi: set ft=python sts=4 ts=4 sw=4 et:
+"""Convert HTML slides into editable layered SVGs plus svgtune instructions.
+
+Input is a deck in the file layout of Claude's "Slides" artifacts::
+
+    <deck>/deck.json            {"order": ["<slide-id>", ...], ...}
+    <deck>/slides/<slide-id>.html   one 1920x1080 <section> per slide
+
+where elements are absolutely positioned boxes, text, inline <svg> and
+<x-connector x1= y1= x2= y2= route= head=> arrows, and build steps
+("clicks") are marked with ``data-build-in="fade N"`` and
+``data-build-out="fade N"`` on the slide's top-level elements.
+
+Each slide is laid out by headless Chromium (Playwright) and serialized into
+plain SVG: boxes become <rect>/<path>, text stays <text> (so it remains
+editable, e.g. in Inkscape), links become <a>, connectors and inline <svg>
+stay vector.  Top-level elements are grouped into Inkscape layers, one per
+build step, and a ``<slide-id>.svgtune`` is written which recreates every
+step with svgtune::
+
+    %file <slide-id>.svg
+    layers style=display:none
+    layer label:re=^base$ style=display:inline
+    %save base
+    layer label:re=^hed$ style=display:inline
+    %save hed
+    ...
+
+Step names
+  come from element ids: an element with ``id="hed--chip"`` names its build
+  step "hed".  One such element per step is enough, the others with the same
+  build order inherit the name.  Elements without build attributes go to
+  "base".  A step without any named element falls back to "build-<N>" (an
+  index, which changes when steps are inserted, so better name them).  Saved
+  files are named after the steps, so inserting or reordering steps does not
+  rename existing outputs.  Elements of a step which leave earlier than the
+  rest of it (``data-build-out``) get their own layer "<step>~<step-left-at>".
+
+Paint order is preserved: consecutive elements of the same step form one
+layer, and elements are moved next to earlier ones of their step only when
+they do not overlap anything they would jump over.
+
+Requirements: Python 3, Playwright for Python with Chromium
+(``pip install playwright && playwright install chromium``), and the fonts
+used by the deck installed system-wide (for viewing/editing the SVGs as well),
+or given via --fonts, or loaded from the deck's own web fonts with --web-fonts.
+
+See https://github.com/yarikoptic/svgtune
+"""
+__author__ = 'Yaroslav Halchenko and contributors'
+__copyright__ = 'Copyright (c) 2026 svgtune contributors'
+__license__ = 'GPL-2.0-or-later'
+
+import argparse
+import json
+import pathlib
+import re
+import sys
+
+JS = r"""
+async () => {
+  const NS = 'http://www.w3.org/2000/svg';
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const num = v => { if (!v) return null; const m = v.match(/(\d+)/); return m ? +m[1] : null; };
+  const f = v => (Math.round(v * 100) / 100).toString();
+  const sec = document.querySelector('section');
+  const S = sec.getBoundingClientRect();
+
+  // 1. connectors -> inline svg (same geometry as the Slides runtime, approx.)
+  sec.querySelectorAll('x-connector').forEach(c => {
+    const g = n => parseFloat(c.getAttribute(n));
+    const x1 = g('x1'), y1 = g('y1'), x2 = g('x2'), y2 = g('y2');
+    const st = c.style, color = st.color || '#000', w = parseFloat(st.borderWidth) || 2;
+    const dashed = /dash/.test(st.borderStyle || ''), dotted = /dot/.test(st.borderStyle || '');
+    const head = c.getAttribute('head') || 'end', route = c.getAttribute('route') || 'straight';
+    let pts;
+    if (route === 'hv') pts = [[x1, y1], [x2, y1], [x2, y2]];
+    else if (route === 'vh') pts = [[x1, y1], [x1, y2], [x2, y2]];
+    else if (route === 'elbow') {
+      if (Math.abs(x2 - x1) >= Math.abs(y2 - y1)) { const m = (x1 + x2) / 2; pts = [[x1, y1], [m, y1], [m, y2], [x2, y2]]; }
+      else { const m = (y1 + y2) / 2; pts = [[x1, y1], [x1, m], [x2, m], [x2, y2]]; }
+    } else pts = [[x1, y1], [x2, y2]];
+    pts = pts.filter((p, i) => i === 0 || p[0] !== pts[i - 1][0] || p[1] !== pts[i - 1][1]);
+    const L = Math.max(4 * w, 10), H = L * 0.45;
+    let heads = '';
+    const arrow = (a, b) => {
+      const dx = b[0] - a[0], dy = b[1] - a[1], d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d;
+      const bx = b[0] - ux * L, by = b[1] - uy * L;
+      heads += `<path d="M${f(b[0])},${f(b[1])} L${f(bx - uy * H)},${f(by + ux * H)} L${f(bx + uy * H)},${f(by - ux * H)} Z" fill="${color}"/>`;
+      return [bx + ux * 0.5, by + uy * 0.5];
+    };
+    const line = pts.map(p => p.slice());
+    if (head === 'end' || head === 'both') line[line.length - 1] = arrow(pts[pts.length - 2], pts[pts.length - 1]);
+    if (head === 'both') line[0] = arrow(pts[1], pts[0]);
+    let dash = '';
+    if (dashed) dash = ` stroke-dasharray="${3 * w + 4} ${2 * w + 4}"`;
+    if (dotted) dash = ` stroke-dasharray="0 ${2 * w + 2}"`;
+    const s = document.createElement('x-svgfrag');
+    { const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]), m = L;
+      s.dataset.bbox = JSON.stringify([Math.min(...xs) - m, Math.min(...ys) - m, Math.max(...xs) + m, Math.max(...ys) + m]); }
+    s.dataset.svg = `<polyline points="${line.map(p => p.map(f).join(',')).join(' ')}" fill="none" stroke="${color}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"${dash}/>` + heads;
+    for (const a of c.attributes) if (/^(id|data-build-)/.test(a.name)) s.setAttribute(a.name, a.value);
+    c.replaceWith(s);
+  });
+
+  // 2. remember transforms and lay out without them (measure untransformed)
+  const tr = new Map();
+  sec.querySelectorAll('*').forEach(e => {
+    if (e.parentElement && e.parentElement.closest('svg')) return;  // keep SVG-internal transforms
+    const cs = getComputedStyle(e);
+    if (cs.transform && cs.transform !== 'none') { tr.set(e, [cs.transform, cs.transformOrigin]); e.style.transform = 'none'; }
+  });
+  await document.fonts.ready;
+
+  const ctx = document.createElement('canvas').getContext('2d');
+  const ascent = cs => {
+    ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const m = ctx.measureText('Hg');
+    return m.fontBoundingBoxAscent;
+  };
+  const color = c => {  // -> [hex-ish, opacity]
+    const m = c.match(/rgba?\(([^)]+)\)/); if (!m) return [c, 1];
+    const p = m[1].split(',').map(s => parseFloat(s));
+    return [`rgb(${p[0]},${p[1]},${p[2]})`, p.length > 3 ? p[3] : 1];
+  };
+  const rr = (x, y, w, h, r) => {  // rounded rect path, r = [tl,tr,br,bl]
+    const [a, b, c, d] = r.map(v => Math.min(v, w / 2, h / 2));
+    if (a === b && b === c && c === d)
+      return `<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}"${a ? ` rx="${f(a)}"` : ''}`;
+    return `<path d="M${f(x + a)},${f(y)} H${f(x + w - b)} A${f(b)},${f(b)} 0 0 1 ${f(x + w)},${f(y + b)} V${f(y + h - c)} A${f(c)},${f(c)} 0 0 1 ${f(x + w - c)},${f(y + h)} H${f(x + d)} A${f(d)},${f(d)} 0 0 1 ${f(x)},${f(y + h - d)} V${f(y + a)} A${f(a)},${f(a)} 0 0 1 ${f(x + a)},${f(y)} Z"`;
+  };
+
+  const box = (e, cs, R) => {
+    let out = '';
+    const x = R.left - S.left, y = R.top - S.top, w = R.width, h = R.height;
+    if (!w || !h) return '';
+    const rad = ['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomRightRadius', 'borderBottomLeftRadius'].map(k => parseFloat(cs[k]) || 0);
+    const [bg, bga] = color(cs.backgroundColor);
+    if (bga > 0) out += rr(x, y, w, h, rad) + ` fill="${bg}"${bga < 1 ? ` fill-opacity="${f(bga)}"` : ''}/>`;
+    const bw = parseFloat(cs.borderTopWidth) || 0, bs = cs.borderTopStyle;
+    if (bw > 0 && bs !== 'none' && bs !== 'hidden') {
+      const [bc, bca] = color(cs.borderTopColor);
+      const op = bca < 1 ? ` stroke-opacity="${f(bca)}"` : '';
+      const stroke = (inset, sw, extra = '') => rr(x + inset, y + inset, w - 2 * inset, h - 2 * inset, rad.map(r => Math.max(r - inset, 0))) + ` fill="none" stroke="${bc}" stroke-width="${f(sw)}"${op}${extra}/>`;
+      if (bs === 'double') { const t = bw / 3; out += stroke(t / 2, t) + stroke(bw - t / 2, t); }
+      else if (bs === 'dashed') out += stroke(bw / 2, bw, ` stroke-dasharray="${f(bw * 3)} ${f(bw * 2)}"`);
+      else if (bs === 'dotted') out += stroke(bw / 2, bw, ` stroke-dasharray="0 ${f(bw * 2)}" stroke-linecap="round"`);
+      else out += stroke(bw / 2, bw);
+    }
+    return out;
+  };
+
+  const text = (node) => {
+    const el = node.parentElement, cs = getComputedStyle(el);
+    if (cs.visibility === 'hidden') return '';
+    const s = node.data, r = document.createRange(), lines = [];
+    let cur = null;
+    for (let i = 0; i < s.length; i++) {
+      r.setStart(node, i); r.setEnd(node, i + 1);
+      const rects = r.getClientRects(); if (!rects.length) continue;
+      const q = rects[0]; if (!q.width && /\s/.test(s[i])) continue;
+      if (!cur || Math.abs(q.top - cur.top) > 2) { cur = { top: q.top, left: q.left, txt: '' }; lines.push(cur); }
+      cur.txt += /\s/.test(s[i]) ? ' ' : s[i];
+    }
+    const tt = cs.textTransform, [fill, fa] = color(cs.color);
+    const a = ascent(cs);
+    let out = '';
+    for (const L of lines) {
+      let t = L.txt.replace(/ +/g, ' ').replace(/ +$/, '');  // HTML collapses runs of spaces
+      if (!t.trim()) continue;
+      if (tt === 'uppercase') t = t.toUpperCase(); else if (tt === 'lowercase') t = t.toLowerCase();
+      const ls = parseFloat(cs.letterSpacing) || 0;
+      out += `<text xml:space="preserve" x="${f(L.left - S.left)}" y="${f(L.top - S.top + a)}" font-family="${esc(cs.fontFamily.replace(/"/g, "'"))}" font-size="${cs.fontSize}" font-weight="${cs.fontWeight}"${cs.fontStyle !== 'normal' ? ` font-style="${cs.fontStyle}"` : ''}${ls ? ` letter-spacing="${f(ls)}"` : ''} fill="${fill}"${fa < 1 ? ` fill-opacity="${f(fa)}"` : ''}>${esc(t)}</text>`;
+    }
+    if (!out) return '';
+    const link = el.closest('a[href]');
+    return link ? `<a href="${esc(link.getAttribute('href'))}" xlink:href="${esc(link.getAttribute('href'))}">${out}</a>` : out;
+  };
+
+  const walk = (e) => {
+    if (e.nodeType === 3) return text(e);
+    if (e.nodeType !== 1) return '';
+    const tag = e.tagName.toLowerCase();
+    if (tag === 'aside' || tag === 'template') return '';
+    const cs = getComputedStyle(e);
+    if (cs.display === 'none') return '';
+    let out;
+    if (tag === 'x-svgfrag') out = e.dataset.svg;
+    else if (tag === 'svg') {
+      const R = e.getBoundingClientRect(), c = e.cloneNode(true);
+      c.removeAttribute('style'); for (const a of [...c.attributes]) if (a.name.startsWith('data-')) c.removeAttribute(a.name);
+      c.setAttribute('x', f(R.left - S.left)); c.setAttribute('y', f(R.top - S.top));
+      c.setAttribute('width', f(R.width)); c.setAttribute('height', f(R.height));
+      out = new XMLSerializer().serializeToString(c);
+    } else {
+      out = box(e, cs, e.getBoundingClientRect());
+      for (const ch of e.childNodes) out += walk(ch);
+    }
+    const t = tr.get(e);
+    if (t && out) {
+      const R = e.getBoundingClientRect(), o = t[1].split(' ').map(parseFloat);
+      const ox = R.left - S.left + o[0], oy = R.top - S.top + o[1];
+      out = `<g transform="translate(${f(ox)},${f(oy)}) ${t[0]} translate(${f(-ox)},${f(-oy)})">${out}</g>`;
+    }
+    return out;
+  };
+
+  // 3. top-level elements -> (label, in, out, svg)
+  const items = [];
+  for (const ch of sec.children) {
+    const svg = walk(ch); if (!svg) continue;
+    const id = ch.getAttribute('id') || '';
+    let bbox;
+    if (ch.dataset && ch.dataset.bbox) bbox = JSON.parse(ch.dataset.bbox);
+    else { const R = ch.getBoundingClientRect(); bbox = [R.left - S.left, R.top - S.top, R.right - S.left, R.bottom - S.top];
+           const t = tr.get(ch); if (t) { const c = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2], r = Math.hypot(bbox[2] - bbox[0], bbox[3] - bbox[1]) / 2; bbox = [c[0] - r, c[1] - r, c[0] + r, c[1] + r]; } }
+    items.push({
+      id, name: id.includes('--') ? id.split('--')[0] : null,
+      inn: num(ch.getAttribute('data-build-in')), out: num(ch.getAttribute('data-build-out')), svg, bbox,
+    });
+  }
+  return items;
+}
+"""
+
+CSS = """
+* { box-sizing: border-box; margin: 0 }
+html, body { margin: 0; background: transparent }
+section { position: relative; width: %(width)dpx; height: %(height)dpx; overflow: hidden;
+          display: block; font-family: %(font)s }
+a { text-decoration: none; color: inherit }
+aside { display: none }
+"""
+
+WEIGHTS = {"Thin": 100, "ExtraLight": 200, "Light": 300, "Regular": 400,
+           "Text": 450, "Medium": 500, "SemiBold": 600, "Bold": 700,
+           "ExtraBold": 800, "Black": 900}
+
+
+def font_faces(fonts_dir):
+    """@font-face rules for font files named like Family-StyleItalic.ext"""
+    if not fonts_dir:
+        return ""
+    faces = []
+    for p in sorted(pathlib.Path(fonts_dir).resolve().rglob("*")):
+        if p.suffix not in (".woff2", ".woff", ".ttf", ".otf") \
+                or "/split/" in p.as_posix():
+            continue
+        m = re.match(r"^(.+?)-([A-Za-z]+)$", p.stem)
+        if not m:
+            continue
+        fam = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ",
+                     m.group(1))
+        style = m.group(2)
+        italic = style.endswith("Italic")
+        if italic:
+            style = style[:-len("Italic")]
+        weight = WEIGHTS.get(style or "Regular")
+        if weight is None:
+            continue
+        faces.append(
+            f"@font-face{{font-family:'{fam}';src:url('{p.as_uri()}');"
+            f"font-weight:{weight};font-style:{'italic' if italic else 'normal'}}}")
+    return "\n".join(faces)
+
+
+def web_font_links(deck):
+    """<link>s for the deck's own (Google Fonts) faces, as listed in deck.json"""
+    return "".join(
+        f'<link rel="stylesheet" href="{f["href"]}">'
+        for f in (deck.get("faces") or {}).values()
+        if f.get("href", "").startswith("https://fonts.googleapis.com/"))
+
+
+def name_steps(items):
+    """Assign layer names to items; return the build plan.
+
+    items: dicts with "name" (from an id "name--...", or None), "inn" and
+    "out" (build orders or None).  Names are assigned in place.
+    Returns a list of (order, shown, hidden): layer names to show and to hide
+    at each build order, in increasing order.
+    """
+    step_name = {}
+    for it in items:
+        if it["name"] and it["inn"] is not None:
+            step_name.setdefault(it["inn"], it["name"])
+    for it in items:
+        if it["name"] is None:
+            it["name"] = ("base" if it["inn"] is None
+                          else step_name.get(it["inn"], f"build-{it['inn']}"))
+        if it["inn"] is not None:
+            step_name.setdefault(it["inn"], it["name"])
+    # elements leaving earlier than the rest of their step: own layer
+    for k in {it["inn"] for it in items if it["inn"] is not None}:
+        group = [it for it in items if it["inn"] == k]
+        if len({it["out"] for it in group}) > 1:
+            for it in group:
+                if it["out"] is not None:
+                    it["name"] += "~" + step_name.get(it["out"],
+                                                      f"build-{it['out']}")
+    order = []
+    for it in items:
+        if it["name"] not in order:
+            order.append(it["name"])
+    plan = []
+    for k in sorted({k for it in items for k in (it["inn"], it["out"])
+                     if k is not None}):
+        shown = sorted({it["name"] for it in items if it["inn"] == k},
+                       key=order.index)
+        hidden = sorted({it["name"] for it in items if it["out"] == k},
+                        key=order.index)
+        plan.append((k, shown, hidden))
+    return plan
+
+
+def overlap(a, b):
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def regroup(items):
+    """Move items back next to earlier items of the same layer name, unless
+    that would change their paint order relative to anything they overlap.
+    Gives fewer, bigger layers with identical rendering."""
+    out = []
+    for it in items:
+        pos = len(out)
+        for j in range(len(out) - 1, -1, -1):
+            if out[j]["name"] == it["name"]:
+                pos = j + 1
+                break
+            if overlap(out[j]["bbox"], it["bbox"]):
+                break
+        out.insert(pos, it)
+    return out
+
+
+def step_label(shown, hidden):
+    main = [n for n in shown if "~" not in n] or shown
+    return "+".join(main) if main else "no-" + "+".join(hidden)
+
+
+def build_svg(sid, items, width=1920, height=1080):
+    layers, seen = [], {}
+    for it in items:
+        if layers and layers[-1][0] == it["name"]:
+            layers[-1][1].append(it["svg"])
+        else:
+            layers.append((it["name"], [it["svg"]]))
+    body = []
+    for name, parts in layers:
+        seen[name] = seen.get(name, 0) + 1
+        lid = name + (f"-{seen[name]}" if seen[name] > 1 else "")
+        body.append(f'<g inkscape:groupmode="layer" inkscape:label="{name}" '
+                    f'id="layer-{lid}">{"".join(parts)}</g>')
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<svg xmlns="http://www.w3.org/2000/svg" '
+            'xmlns:xlink="http://www.w3.org/1999/xlink" '
+            'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+            f'width="{width}" height="{height}" viewBox="0 0 {width} {height}">\n'
+            f'<title>{sid}</title>\n' + "\n".join(body) + "\n</svg>\n")
+
+
+def build_svgtune(sid, items, plan):
+    def show(name, on):
+        return (f"layer label:re=^{re.escape(name)}$ "
+                f"style=display:{'inline' if on else 'none'}")
+    tune = [f"# svgtune instructions for the build steps of slide '{sid}'",
+            "# (generated by slides2svgtune: step names come from element ids"
+            " 'name--...')",
+            f"%file {sid}.svg", "", "layers style=display:none"]
+    if any(it["name"] == "base" for it in items):
+        tune += [show("base", True), "%save base"]
+    for _, shown, hidden in plan:
+        tune.append("")
+        tune += [show(h, False) for h in hidden]
+        tune += [show(s, True) for s in shown]
+        tune.append(f"%save {step_label(shown, hidden)}")
+    return "\n".join(tune) + "\n"
+
+
+def convert(deck_dir, outdir, slides=None, fonts=None, web_fonts=False,
+            svgtune=True, width=1920, height=1080, font="sans-serif",
+            log=print):
+    """Convert slides of the deck; return {slide id: [saved step names]}"""
+    from playwright.sync_api import sync_playwright
+    deck_dir, outdir = pathlib.Path(deck_dir).resolve(), pathlib.Path(outdir).resolve()
+    outdir.mkdir(parents=True, exist_ok=True)
+    deck = json.loads((deck_dir / "deck.json").read_text())
+    head = ("<meta charset='utf-8'>"
+            + (web_font_links(deck) if web_fonts else "")
+            + "<style>" + font_faces(fonts)
+            + CSS % dict(width=width, height=height, font=font) + "</style>")
+    results = {}
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": width, "height": height})
+        for sid in deck["order"]:
+            if slides and sid not in slides:
+                continue
+            src = deck_dir / "slides" / f"{sid}.html"
+            if not src.exists():
+                log(f"{sid}: no {src}, skipped")
+                continue
+            tmp = outdir / f".{sid}.html"
+            tmp.write_text(f"<!doctype html><html><head>{head}</head>"
+                           f"<body>{src.read_text()}</body></html>")
+            try:
+                page.goto(tmp.as_uri())
+                page.wait_for_load_state("networkidle")
+                items = page.evaluate(JS)
+            finally:
+                tmp.unlink()
+            plan = name_steps(items)
+            items = regroup(items)
+            (outdir / f"{sid}.svg").write_text(build_svg(sid, items, width, height))
+            steps = ([] if not plan else
+                     (["base"] if any(it["name"] == "base" for it in items) else [])
+                     + [step_label(s, h) for _, s, h in plan])
+            results[sid] = steps
+            if svgtune and plan:
+                (outdir / f"{sid}.svgtune").write_text(build_svgtune(sid, items, plan))
+                log(f"{sid}.svg + {sid}.svgtune: {' '.join(steps)}")
+            else:
+                log(f"{sid}.svg" + ("" if plan else " (no build steps)"))
+        browser.close()
+    return results
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description=__doc__.split("\n\n")[0],
+        epilog="See the module docstring (or README) for details.")
+    ap.add_argument("deck", help="deck directory with deck.json and slides/")
+    ap.add_argument("outdir", help="output directory for .svg and .svgtune files")
+    ap.add_argument("slides", nargs="*", help="only these slide ids (default: all)")
+    ap.add_argument("--fonts", metavar="DIR",
+                    help="load font files (Family-Style.woff2|ttf|...) from DIR")
+    ap.add_argument("--web-fonts", action="store_true",
+                    help="load the web fonts listed in deck.json (needs network)")
+    ap.add_argument("--font", default="sans-serif",
+                    help="default font-family for slides (default: %(default)s)")
+    ap.add_argument("--size", default="1920x1080",
+                    help="slide size in px (default: %(default)s)")
+    ap.add_argument("--no-svgtune", action="store_true",
+                    help="do not write .svgtune files")
+    a = ap.parse_args(argv)
+    width, height = map(int, a.size.lower().split("x"))
+    try:
+        convert(a.deck, a.outdir, slides=a.slides, fonts=a.fonts,
+                web_fonts=a.web_fonts, svgtune=not a.no_svgtune,
+                width=width, height=height, font=a.font)
+    except ImportError as e:
+        sys.exit(f"slides2svgtune needs Playwright for Python: {e}")
+
+
+if __name__ == "__main__":
+    main()

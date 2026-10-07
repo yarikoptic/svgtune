@@ -9,7 +9,7 @@ all: $(MANPAGE)
 install: $(MANPAGE)
 	mkdir -p  $(PREFIX)/usr/bin
 	mkdir -p  $(PREFIX)/usr/share/man/man1
-	install -t $(PREFIX)/usr/bin/ svgtune
+	install -t $(PREFIX)/usr/bin/ svgtune slides2svgtune
 	install -t $(PREFIX)/usr/share/man/man1/ $(MANPAGE)
 
 clean:

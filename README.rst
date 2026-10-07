@@ -124,6 +124,38 @@ point to the Inkscape executable to use.
 
 Tests (in tests/) can be run with ``python3 -m pytest tests``.
 
+============================================
+HTML SLIDES WITH BUILD STEPS: slides2svgtune
+============================================
+
+``slides2svgtune`` (optional; needs Playwright for Python with Chromium:
+``pip install playwright && playwright install chromium``) turns HTML slides
+into one editable SVG per slide plus a ``.svgtune`` file which recreates every
+build step ("click") of the slide::
+
+  slides2svgtune <deck> <outdir> [<slide-id> ...] [--fonts DIR] [--web-fonts]
+  cd <outdir> && svgtune <slide-id>.svgtune     # -> <slide-id>_tuned/<step>.svg
+
+The deck uses the file layout of Claude's "Slides" artifacts: ``deck.json``
+with the slide ``order``, and ``slides/<slide-id>.html`` holding one
+1920x1080 ``<section>`` of absolutely positioned boxes, text, inline
+``<svg>`` and ``<x-connector>`` arrows.  Build steps are marked with
+``data-build-in="fade N"`` / ``data-build-out="fade N"`` on the top-level
+elements.
+
+Each slide is laid out by headless Chromium and written as plain SVG: text
+stays ``<text>`` (editable in Inkscape, provided the fonts are installed), and
+links stay ``<a>``.  Build steps become Inkscape layers
+named after the steps, and saved files are named after the steps too, so
+adding or reordering steps does not rename existing outputs.  Name a step by
+giving one of its elements an id ``<step>--<anything>``, e.g.
+``id="hed--chip"``; elements without build attributes go to the ``base``
+layer, and unnamed steps fall back to ``build-<N>``.  Elements which leave
+before the rest of their step get their own layer ``<step>~<step-left-at>``.
+See ``./slides2svgtune --help`` and its docstring for details.
+
+Its tests are skipped when Playwright or Chromium are not available.
+
 =======
 Helpers
 =======
