@@ -382,8 +382,13 @@ def build_svgtune(sid, items, plan):
 
 def convert(deck_dir, outdir, slides=None, fonts=None, web_fonts=False,
             svgtune=True, width=1920, height=1080, font="sans-serif",
-            log=print):
-    """Convert slides of the deck; return {slide id: [saved step names]}"""
+            link_target="_blank", log=print):
+    """Convert slides of the deck; return {slide id: [saved step names]}
+
+    link_target: ``target`` for links (default "_blank": open in a new tab or
+    window, also when the SVG is embedded, e.g. with <object> into an HTML
+    presentation); empty or None for none.
+    """
     from playwright.sync_api import sync_playwright
     deck_dir, outdir = pathlib.Path(deck_dir).resolve(), pathlib.Path(outdir).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
@@ -412,6 +417,10 @@ def convert(deck_dir, outdir, slides=None, fonts=None, web_fonts=False,
                 items = page.evaluate(JS)
             finally:
                 tmp.unlink()
+            if link_target:
+                for it in items:
+                    it["svg"] = it["svg"].replace(
+                        "<a href=", f'<a target="{link_target}" href=')
             plan = name_steps(items)
             items = regroup(items)
             (outdir / f"{sid}.svg").write_text(build_svg(sid, items, width, height))
@@ -443,6 +452,10 @@ def main(argv=None):
                     help="default font-family for slides (default: %(default)s)")
     ap.add_argument("--size", default="1920x1080",
                     help="slide size in px (default: %(default)s)")
+    ap.add_argument("--link-target", default="_blank", metavar="TARGET",
+                    help="target of links, so they open in a new tab also when"
+                         " the SVG is embedded (e.g. via <object>); '' for none"
+                         " (default: %(default)s)")
     ap.add_argument("--no-svgtune", action="store_true",
                     help="do not write .svgtune files")
     a = ap.parse_args(argv)
@@ -450,7 +463,8 @@ def main(argv=None):
     try:
         convert(a.deck, a.outdir, slides=a.slides, fonts=a.fonts,
                 web_fonts=a.web_fonts, svgtune=not a.no_svgtune,
-                width=width, height=height, font=a.font)
+                width=width, height=height, font=a.font,
+                link_target=a.link_target)
     except ImportError as e:
         sys.exit(f"slides2svgtune needs Playwright for Python: {e}")
 

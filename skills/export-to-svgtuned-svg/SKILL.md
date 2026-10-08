@@ -7,7 +7,7 @@ description: Export HTML slides (e.g. a Claude Slides deck) with click/build ste
 
 Turns a deck of HTML slides into:
 
-- `<slide>.svg`: one editable SVG per slide (text stays text, links stay links), with one Inkscape layer per build step, named after the step;
+- `<slide>.svg`: one editable SVG per slide (text stays text, links stay links and open in a new tab, also when embedded with `<object>`), with one Inkscape layer per build step, named after the step;
 - `<slide>.svgtune`: svgtune instructions which recreate every build step;
 - `<slide>_tuned/<step>.svg`: one SVG per build step, after running svgtune.
 

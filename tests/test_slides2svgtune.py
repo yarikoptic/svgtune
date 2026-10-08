@@ -184,6 +184,8 @@ def test_convert(deck, tmp_path):
     assert '  ' not in texts            # HTML-collapsed whitespace
     hrefs = {a.get('{%s}href' % XLINK_NS) for a in doc.iter('{%s}a' % SVG_NS)}
     assert hrefs == {'https://example.org/base', 'https://example.org/beta'}
+    # links open in a new tab by default, also when the SVG is embedded
+    assert {a.get('target') for a in doc.iter('{%s}a' % SVG_NS)} == {'_blank'}
     # the rotated label keeps a rotation
     assert any('matrix' in (g.get('transform') or '')
                for g in doc.iter('{%s}g' % SVG_NS))
@@ -194,6 +196,15 @@ def test_convert(deck, tmp_path):
     saves = [line.split()[1] for line in tune.splitlines()
              if line.startswith('%save')]
     assert saves == ['base', 'alpha', 'beta', 'gamma', 'build-4']
+
+
+@needs_chromium
+def test_no_link_target(deck, tmp_path):
+    out = tmp_path / 'out'
+    s2s.convert(deck, out, slides=['s1'], link_target='', log=lambda *a: None)
+    doc = etree.parse(str(out / 's1.svg')).getroot()
+    links = list(doc.iter('{%s}a' % SVG_NS))
+    assert links and all(a.get('target') is None for a in links)
 
 
 @needs_chromium
