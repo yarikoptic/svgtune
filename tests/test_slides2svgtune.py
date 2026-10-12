@@ -289,7 +289,7 @@ def test_convert_static_elements(tmp_path):
 FORMAT = """\
 <section style="background:#ffffff; font-family:sans-serif">
   <div style="position:absolute; top:200px; left:20px; width:300px; height:80px; border-left:8px solid #ff0000; border-radius:12px"></div>
-  <div style="position:absolute; top:300px; left:20px; width:300px; height:100px; opacity:0.25; background:#0000ff; border-radius:50%"></div>
+  <div style="position:absolute; top:300px; left:20px; width:300px; height:200px; opacity:0.25; background:#0000ff; border-radius:50%"></div>
   <x-shape kind="ellipse" style="position:absolute; top:420px; left:20px; width:200px; height:80px; background:#00ff00"></x-shape>
   <div style="position:absolute; top:500px; left:700px; width:400px; height:200px; transform:translateX(-50%)">
     <x-connector x1="0" y1="50%" x2="100%" y2="50%" head="none" head-start="filled" style="color:#00aa00"></x-connector>
@@ -328,9 +328,9 @@ def test_convert_slides_format(tmp_path):
         '{%s}rect' % SVG_NS, '1920', 'rgb(255,255,255)')
     # the left border as a ring following the rounded corners
     assert q('//s:path[@fill-rule="evenodd" and @fill="rgb(255,0,0)"]')
-    # a 50% radius is a pill in the Slides format, here under the opacity;
-    # an ellipse shape is an ellipse
-    assert q('//s:g[@opacity="0.25"]/s:rect[@rx="50" and not(@ry)]')
+    # a 50% radius is a pill in the Slides format (256px, fitted to the 200px
+    # height), here under the opacity; an ellipse shape is an ellipse
+    assert q('//s:g[@opacity="0.25"]/s:rect[@rx="100" and not(@ry)]')
     assert q('//s:rect[@fill="rgb(0,255,0)" and @rx="100" and @ry="40"]')
     # the connector is placed in its host (at 700 before the host's translate
     # by -200, applied once), with only a head at its start
