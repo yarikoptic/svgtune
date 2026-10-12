@@ -61,8 +61,8 @@ Deliver `out/` as a zip (SVGs, `.svgtune`, `_tuned/`). Mention that the same fon
 
 Build steps are `data-build-in="fade N"` / `data-build-out="fade N"` on a slide's top-level elements. To get stable output names:
 
-- Give **one** element of each build step an id `<step>--<part>`, e.g. `id="hed--chip"`. Other elements of the same step inherit the name. Step names: short, lowercase, `[a-z0-9-]`.
-- Elements without build attributes form the `base` layer.
+- Give **one** element of each build step an id `<step>--<part>`, e.g. `id="hed--chip"`. Other elements of the same step inherit the name. Step names: short, lowercase, `[a-z0-9-]`, a different one for each step (a name reused for another step is an error).
+- Elements without `data-build-in` form the `base` layer, whatever their id.
 - Elements that leave before the rest of their step (`data-build-out`) automatically get their own layer `<step>~<later-step>`. No need to name them.
 - Unnamed steps fall back to `build-<N>`, which changes when steps are inserted. Name them instead.
 - When the user adds a step, add the id in the deck (not in the SVG or the `.svgtune`), because both are regenerated from the deck.

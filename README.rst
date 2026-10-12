@@ -149,9 +149,10 @@ links stay ``<a>``.  Build steps become Inkscape layers
 named after the steps, and saved files are named after the steps too, so
 adding or reordering steps does not rename existing outputs.  Name a step by
 giving one of its elements an id ``<step>--<anything>``, e.g.
-``id="hed--chip"``; elements without build attributes go to the ``base``
-layer, and unnamed steps fall back to ``build-<N>``.  Elements which leave
-before the rest of their step get their own layer ``<step>~<step-left-at>``.
+``id="hed--chip"``, a different name for each step; elements without
+``data-build-in`` go to the ``base`` layer, whatever their id, and unnamed
+steps fall back to ``build-<N>``.  Elements which leave before the rest of
+their step (or of ``base``) get their own layer ``<step>~<step-left-at>``.
 See ``./slides2svgtune --help`` and its docstring for details.
 
 Its tests are skipped when Playwright or Chromium are not available.

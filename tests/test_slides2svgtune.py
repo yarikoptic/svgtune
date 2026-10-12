@@ -128,6 +128,35 @@ def test_name_steps_whole_step_leaving_keeps_its_name():
     assert plan == [(1, ['sync'], []), (2, ['next'], ['sync'])]
 
 
+def test_name_steps_static_elements_stay_in_base():
+    items = _items(
+        ('title', None, None, (0, 0, 1, 1)),     # static, id "title--..."
+        (None, None, 2, (0, 0, 1, 1)),           # static, leaves at "beta"
+        (None, None, None, (0, 0, 1, 1)),
+        ('alpha', 1, None, (0, 0, 1, 1)),
+        ('beta', 2, None, (0, 0, 1, 1)),
+    )
+    plan = s2s.name_steps(items)
+    assert [it['name'] for it in items] == [
+        'base', 'base~beta', 'base', 'alpha', 'beta']
+    assert plan == [(1, ['alpha'], []), (2, ['beta'], ['base~beta'])]
+    # both static layers are shown before the first save
+    first = s2s.build_svgtune('x', items, plan).split('%save')[0]
+    assert '^base$ style=display:inline' in first
+    assert r'^base\~beta$ style=display:inline' in first
+
+
+@pytest.mark.parametrize('specs, match', [
+    ([('nwb', 1), ('extra', 2), ('nwb', 3)], 'more than one'),
+    ([(None, None), ('base', 2)], 'reserved'),
+    ([('base', 2)], 'reserved'),               # also without static elements
+])
+def test_name_steps_rejects_reused_or_reserved_names(specs, match):
+    items = _items(*((n, i, None, (0, 0, 1, 1)) for n, i in specs))
+    with pytest.raises(s2s.StepNameError, match=match):
+        s2s.name_steps(items)
+
+
 def test_regroup_respects_overlaps():
     a1 = dict(name='a', bbox=(0, 0, 10, 10))
     b = dict(name='b', bbox=(20, 0, 30, 10))       # does not overlap a2
@@ -225,3 +254,29 @@ def test_convert_then_svgtune(deck, tmp_path):
     assert _shown(tuned / 'gamma.svg') == {'base', 'alpha', 'beta', 'gamma'}
     assert _shown(tuned / 'build-4.svg') == {'base', 'alpha', 'beta', 'gamma',
                                              'build-4'}
+
+
+STATIC = """\
+<section style="font-family:sans-serif">
+  <p id="title--main" style="position:absolute; top:20px; left:20px; font-size:30px">Title</p>
+  <p data-build-out="fade 1" style="position:absolute; top:80px; left:20px; font-size:30px">Intro</p>
+  <p id="next--x" data-build-in="fade 1" style="position:absolute; top:80px; left:400px; font-size:30px">Next</p>
+</section>
+"""
+
+
+@needs_chromium
+def test_convert_static_elements(tmp_path):
+    d = tmp_path / 'deck'
+    (d / 'slides').mkdir(parents=True)
+    (d / 'deck.json').write_text(json.dumps({"order": ["st"]}))
+    (d / 'slides' / 'st.html').write_text(STATIC)
+    out = tmp_path / 'out'
+    s2s.convert(d, out, log=lambda *a: None)
+    assert {lab for lab, _ in _layers(out / 'st.svg')} == {'base', 'base~next', 'next'}
+    res = subprocess.run([sys.executable, SVGTUNE, 'st.svgtune'], cwd=str(out),
+                         capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    # the static title is in base; the intro leaves at "next", the rest stays
+    assert _shown(out / 'st_tuned' / 'base.svg') == {'base', 'base~next'}
+    assert _shown(out / 'st_tuned' / 'next.svg') == {'base', 'next'}
