@@ -11,7 +11,10 @@ Input is a deck in the file layout of Claude's "Slides" artifacts::
 where elements are absolutely positioned boxes, text, inline <svg> and
 <x-connector x1= y1= x2= y2= route= head=> arrows, and build steps
 ("clicks") are marked with ``data-build-in="fade N"`` and
-``data-build-out="fade N"`` on the slide's top-level elements.
+``data-build-out="fade N"`` on the slide's top-level ``position:absolute``
+elements; as in the Slides runtime, a build without N is the next one.
+Content which is not converted, or only approximately (e.g. images, icons,
+shadows), is reported.
 
 Each slide is laid out by headless Chromium (Playwright) and serialized into
 plain SVG: boxes become <rect>/<path>, text stays <text> (so it remains
@@ -64,18 +67,40 @@ JS = r"""
 async () => {
   const NS = 'http://www.w3.org/2000/svg';
   const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  const num = v => { if (!v) return null; const m = v.match(/(\d+)/); return m ? +m[1] : null; };
+  let next = 1;  // build orders as the Slides runtime reads them: no order = the next one
+  const effects = ['fade', 'rise', 'drop', 'left', 'right', 'scale', 'pop'];
+  const num = v => {
+    const w = (v || '').trim().toLowerCase().split(/\s+/);
+    if (!effects.includes(w[0])) return null;
+    let k = next; for (const x of w.slice(1)) if (/^\d+$/.test(x)) k = Math.max(1, Math.min(50, +x));
+    next = Math.max(next, k + 1); return k;
+  };
   const f = v => (Math.round(v * 100) / 100).toString();
   const sec = document.querySelector('section');
   const S = sec.getBoundingClientRect();
+  const skipped = new Set();  // what is not (exactly) converted, to warn about
 
-  // 1. connectors -> inline svg (same geometry as the Slides runtime, approx.)
+  // 1. remember transforms and lay out without them (measure untransformed)
+  const tr = new Map();
+  sec.querySelectorAll('*').forEach(e => {
+    if (e.parentElement && e.parentElement.closest('svg')) return;  // keep SVG-internal transforms
+    const cs = getComputedStyle(e);
+    if (cs.transform && cs.transform !== 'none') { tr.set(e, [cs.transform, cs.transformOrigin]); e.style.transform = 'none'; }
+  });
+
+  // 2. connectors -> inline svg (same geometry as the Slides runtime, approx.)
   sec.querySelectorAll('x-connector').forEach(c => {
-    const g = n => parseFloat(c.getAttribute(n));
-    const x1 = g('x1'), y1 = g('y1'), x2 = g('x2'), y2 = g('y2');
+    const P = c.parentElement, B = P.getBoundingClientRect();  // the section or a host <div>
+    const g = (n, o, size) => { const v = (c.getAttribute(n) || '').trim(); return o + (v.endsWith('%') ? parseFloat(v) / 100 * size : parseFloat(v)); };
+    const ox = B.left - S.left + P.clientLeft, oy = B.top - S.top + P.clientTop;
+    const x1 = g('x1', ox, P.clientWidth), y1 = g('y1', oy, P.clientHeight), x2 = g('x2', ox, P.clientWidth), y2 = g('y2', oy, P.clientHeight);
+    if ([x1, y1, x2, y2].some(isNaN)) { skipped.add('<x-connector> without x1 y1 x2 y2'); c.remove(); return; }
     const st = c.style, color = st.color || '#000', w = parseFloat(st.borderWidth) || 2;
     const dashed = /dash/.test(st.borderStyle || ''), dotted = /dot/.test(st.borderStyle || '');
     const head = c.getAttribute('head') || 'end', route = c.getAttribute('route') || 'straight';
+    const hs = c.getAttribute('head-start') || (head === 'both' ? 'filled' : 'none');
+    const he = c.getAttribute('head-end') || (head === 'none' ? 'none' : 'filled');
+    if (hs === 'open' || he === 'open') skipped.add('open connector heads (drawn filled)');
     let pts;
     if (route === 'hv') pts = [[x1, y1], [x2, y1], [x2, y2]];
     else if (route === 'vh') pts = [[x1, y1], [x1, y2], [x2, y2]];
@@ -93,8 +118,8 @@ async () => {
       return [bx + ux * 0.5, by + uy * 0.5];
     };
     const line = pts.map(p => p.slice());
-    if (head === 'end' || head === 'both') line[line.length - 1] = arrow(pts[pts.length - 2], pts[pts.length - 1]);
-    if (head === 'both') line[0] = arrow(pts[1], pts[0]);
+    if (he !== 'none') line[line.length - 1] = arrow(pts[pts.length - 2], pts[pts.length - 1]);
+    if (hs !== 'none') line[0] = arrow(pts[1], pts[0]);
     let dash = '';
     if (dashed) dash = ` stroke-dasharray="${3 * w + 4} ${2 * w + 4}"`;
     if (dotted) dash = ` stroke-dasharray="0 ${2 * w + 2}"`;
@@ -106,13 +131,6 @@ async () => {
     c.replaceWith(s);
   });
 
-  // 2. remember transforms and lay out without them (measure untransformed)
-  const tr = new Map();
-  sec.querySelectorAll('*').forEach(e => {
-    if (e.parentElement && e.parentElement.closest('svg')) return;  // keep SVG-internal transforms
-    const cs = getComputedStyle(e);
-    if (cs.transform && cs.transform !== 'none') { tr.set(e, [cs.transform, cs.transformOrigin]); e.style.transform = 'none'; }
-  });
   await document.fonts.ready;
 
   const ctx = document.createElement('canvas').getContext('2d');
@@ -126,25 +144,48 @@ async () => {
     const p = m[1].split(',').map(s => parseFloat(s));
     return [`rgb(${p[0]},${p[1]},${p[2]})`, p.length > 3 ? p[3] : 1];
   };
-  const rr = (x, y, w, h, r) => {  // rounded rect path, r = [tl,tr,br,bl]
-    const [a, b, c, d] = r.map(v => Math.min(v, w / 2, h / 2));
-    if (a === b && b === c && c === d)
-      return `<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}"${a ? ` rx="${f(a)}"` : ''}`;
-    return `<path d="M${f(x + a)},${f(y)} H${f(x + w - b)} A${f(b)},${f(b)} 0 0 1 ${f(x + w)},${f(y + b)} V${f(y + h - c)} A${f(c)},${f(c)} 0 0 1 ${f(x + w - c)},${f(y + h)} H${f(x + d)} A${f(d)},${f(d)} 0 0 1 ${f(x)},${f(y + h - d)} V${f(y + a)} A${f(a)},${f(a)} 0 0 1 ${f(x + a)},${f(y)} Z"`;
+  const radii = (cs, w, h) => {  // [[rx, ry]] for tl, tr, br, bl, scaled down to fit as in CSS
+    // % as the Slides format reads it: >= 50% is a pill (256px), else that % of 256px
+    const v = s => (s.endsWith('%') ? (parseFloat(s) >= 50 ? 256 : Math.round(parseFloat(s) * 2.56)) : parseFloat(s)) || 0;
+    const r = ['TopLeft', 'TopRight', 'BottomRight', 'BottomLeft'].map(k => {
+      const [a, b = a] = cs[`border${k}Radius`].split(' '); return [v(a), v(b)];
+    });
+    const k = Math.min(1, w / (r[0][0] + r[1][0]), w / (r[3][0] + r[2][0]), h / (r[0][1] + r[3][1]), h / (r[1][1] + r[2][1]));
+    return r.map(([a, b]) => (a && b ? [a * k, b * k] : [0, 0]));
+  };
+  const rp = (x, y, w, h, r) => {  // rounded rect path data
+    const [[a, A], [b, B], [c, C], [d, D]] = r;
+    return `M${f(x + a)},${f(y)} H${f(x + w - b)} A${f(b)},${f(B)} 0 0 1 ${f(x + w)},${f(y + B)} V${f(y + h - C)} A${f(c)},${f(C)} 0 0 1 ${f(x + w - c)},${f(y + h)} H${f(x + d)} A${f(d)},${f(D)} 0 0 1 ${f(x)},${f(y + h - D)} V${f(y + A)} A${f(a)},${f(A)} 0 0 1 ${f(x + a)},${f(y)} Z`;
+  };
+  const rr = (x, y, w, h, r) => {  // rounded rect element, open for more attributes
+    const [a, b] = r[0];
+    if (r.every(q => q[0] === a && q[1] === b))
+      return `<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}"${a ? ` rx="${f(a)}"` : ''}${b !== a ? ` ry="${f(b)}"` : ''}`;
+    return `<path d="${rp(x, y, w, h, r)}"`;
   };
 
   const box = (e, cs, R) => {
     let out = '';
     const x = R.left - S.left, y = R.top - S.top, w = R.width, h = R.height;
     if (!w || !h) return '';
-    const rad = ['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomRightRadius', 'borderBottomLeftRadius'].map(k => parseFloat(cs[k]) || 0);
+    const ellipse = e.tagName === 'X-SHAPE' && (e.getAttribute('kind') || '').trim().toLowerCase() === 'ellipse';
+    const rad = ellipse ? Array(4).fill([w / 2, h / 2]) : radii(cs, w, h);
     const [bg, bga] = color(cs.backgroundColor);
     if (bga > 0) out += rr(x, y, w, h, rad) + ` fill="${bg}"${bga < 1 ? ` fill-opacity="${f(bga)}"` : ''}/>`;
+    const sides = ['Top', 'Right', 'Bottom', 'Left'].map(s => [parseFloat(cs[`border${s}Width`]) || 0, cs[`border${s}Style`], cs[`border${s}Color`]]);
+    if (sides.some(s => s.join() !== sides[0].join())) {  // per-side widths (one style and color): an even-odd ring
+      const [[t], [r], [b], [l]] = sides, s = sides.find(s => s[0] > 0), iw = w - l - r, ih = h - t - b;
+      if (!s) return out;
+      if (s[1] !== 'solid') skipped.add(`${s[1]} border on some sides only (drawn solid)`);
+      const [c, a] = color(s[2]), ins = [[l, t], [r, t], [r, b], [l, b]];
+      const inner = iw > 0 && ih > 0 ? ' ' + rp(x + l, y + t, iw, ih, rad.map(([p, q], i) => [Math.max(p - ins[i][0], 0), Math.max(q - ins[i][1], 0)])) : '';
+      return out + `<path d="${rp(x, y, w, h, rad)}${inner}" fill-rule="evenodd" fill="${c}"${a < 1 ? ` fill-opacity="${f(a)}"` : ''}/>`;
+    }
     const bw = parseFloat(cs.borderTopWidth) || 0, bs = cs.borderTopStyle;
     if (bw > 0 && bs !== 'none' && bs !== 'hidden') {
       const [bc, bca] = color(cs.borderTopColor);
       const op = bca < 1 ? ` stroke-opacity="${f(bca)}"` : '';
-      const stroke = (inset, sw, extra = '') => rr(x + inset, y + inset, w - 2 * inset, h - 2 * inset, rad.map(r => Math.max(r - inset, 0))) + ` fill="none" stroke="${bc}" stroke-width="${f(sw)}"${op}${extra}/>`;
+      const stroke = (inset, sw, extra = '') => rr(x + inset, y + inset, w - 2 * inset, h - 2 * inset, rad.map(([p, q]) => [Math.max(p - inset, 0), Math.max(q - inset, 0)])) + ` fill="none" stroke="${bc}" stroke-width="${f(sw)}"${op}${extra}/>`;
       if (bs === 'double') { const t = bw / 3; out += stroke(t / 2, t) + stroke(bw - t / 2, t); }
       else if (bs === 'dashed') out += stroke(bw / 2, bw, ` stroke-dasharray="${f(bw * 3)} ${f(bw * 2)}"`);
       else if (bs === 'dotted') out += stroke(bw / 2, bw, ` stroke-dasharray="0 ${f(bw * 2)}" stroke-linecap="round"`);
@@ -166,6 +207,8 @@ async () => {
       cur.txt += /\s/.test(s[i]) ? ' ' : s[i];
     }
     const tt = cs.textTransform, [fill, fa] = color(cs.color);
+    let td = 'none';  // decorations reach inline descendants, e.g. <u>a <b>b</b></u>
+    for (let p = el; p !== sec; p = p.parentElement) { const ps = getComputedStyle(p); td = ps.textDecorationLine; if (td !== 'none' || ps.display !== 'inline') break; }
     const a = ascent(cs);
     let out = '';
     for (const L of lines) {
@@ -173,7 +216,7 @@ async () => {
       if (!t.trim()) continue;
       if (tt === 'uppercase') t = t.toUpperCase(); else if (tt === 'lowercase') t = t.toLowerCase();
       const ls = parseFloat(cs.letterSpacing) || 0;
-      out += `<text xml:space="preserve" x="${f(L.left - S.left)}" y="${f(L.top - S.top + a)}" font-family="${esc(cs.fontFamily.replace(/"/g, "'"))}" font-size="${cs.fontSize}" font-weight="${cs.fontWeight}"${cs.fontStyle !== 'normal' ? ` font-style="${cs.fontStyle}"` : ''}${ls ? ` letter-spacing="${f(ls)}"` : ''} fill="${fill}"${fa < 1 ? ` fill-opacity="${f(fa)}"` : ''}>${esc(t)}</text>`;
+      out += `<text xml:space="preserve" x="${f(L.left - S.left)}" y="${f(L.top - S.top + a)}" font-family="${esc(cs.fontFamily.replace(/"/g, "'"))}" font-size="${cs.fontSize}" font-weight="${cs.fontWeight}"${cs.fontStyle !== 'normal' ? ` font-style="${cs.fontStyle}"` : ''}${ls ? ` letter-spacing="${f(ls)}"` : ''}${td !== 'none' ? ` text-decoration="${td}"` : ''} fill="${fill}"${fa < 1 ? ` fill-opacity="${f(fa)}"` : ''}>${esc(t)}</text>`;
     }
     if (!out) return '';
     const link = el.closest('a[href]');
@@ -187,6 +230,13 @@ async () => {
     if (tag === 'aside' || tag === 'template') return '';
     const cs = getComputedStyle(e);
     if (cs.display === 'none') return '';
+    if (/^(img|video|iframe|canvas|x-embed|x-icon)$/.test(tag)) { skipped.add(`<${tag}>`); return ''; }
+    const kind = tag === 'x-shape' ? (e.getAttribute('kind') || '').trim().toLowerCase() : '';
+    if (/^(diamond|arrow-)/.test(kind)) skipped.add(`<x-shape kind=${kind}> (drawn as a rectangle)`);
+    if (tag === 'li') skipped.add('list markers');
+    if (tag !== 'svg') for (const [p, none] of [['background-image', 'none'], ['box-shadow', 'none'], ['text-shadow', 'none'], ['filter', 'none'], ['mix-blend-mode', 'normal']])
+      if (cs.getPropertyValue(p) !== none) skipped.add(p);
+    if (cs.textTransform === 'capitalize') skipped.add('text-transform:capitalize');
     let out;
     if (tag === 'x-svgfrag') out = e.dataset.svg;
     else if (tag === 'svg') {
@@ -199,6 +249,7 @@ async () => {
       out = box(e, cs, e.getBoundingClientRect());
       for (const ch of e.childNodes) out += walk(ch);
     }
+    if (out && +cs.opacity < 1) out = `<g opacity="${f(+cs.opacity)}">${out}</g>`;
     const t = tr.get(e);
     if (t && out) {
       const R = e.getBoundingClientRect(), o = t[1].split(' ').map(parseFloat);
@@ -209,9 +260,14 @@ async () => {
   };
 
   // 3. top-level elements -> (label, in, out, svg)
-  const items = [];
+  const items = [], scs = getComputedStyle(sec), [sbg, sba] = color(scs.backgroundColor);
+  if (sba > 0) items.push({ id: '', name: null, inn: null, out: null, bbox: [0, 0, S.width, S.height],
+    svg: `<rect width="${f(S.width)}" height="${f(S.height)}" fill="${sbg}"${sba < 1 ? ` fill-opacity="${f(sba)}"` : ''}/>` });
+  if (scs.backgroundImage !== 'none') skipped.add('background-image');
   for (const ch of sec.children) {
-    const svg = walk(ch); if (!svg) continue;
+    const pinned = ch.tagName === 'X-SVGFRAG' || getComputedStyle(ch).position === 'absolute';  // only these build
+    const inn = pinned ? num(ch.getAttribute('data-build-in')) : null, out = pinned ? num(ch.getAttribute('data-build-out')) : null;
+    const svg = walk(ch); if (!svg && inn === null && out === null) continue;
     const id = ch.getAttribute('id') || '';
     let bbox;
     if (ch.dataset && ch.dataset.bbox) bbox = JSON.parse(ch.dataset.bbox);
@@ -219,10 +275,10 @@ async () => {
            const t = tr.get(ch); if (t) { const c = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2], r = Math.hypot(bbox[2] - bbox[0], bbox[3] - bbox[1]) / 2; bbox = [c[0] - r, c[1] - r, c[0] + r, c[1] + r]; } }
     items.push({
       id, name: id.includes('--') ? id.split('--')[0] : null,
-      inn: num(ch.getAttribute('data-build-in')), out: num(ch.getAttribute('data-build-out')), svg, bbox,
+      inn, out, svg, bbox,
     });
   }
-  return items;
+  return { items, skipped: [...skipped] };
 }
 """
 
@@ -230,7 +286,13 @@ CSS = """
 * { box-sizing: border-box; margin: 0 }
 html, body { margin: 0; background: transparent }
 section { position: relative; width: %(width)dpx; height: %(height)dpx; overflow: hidden;
-          display: block; font-family: %(font)s }
+          display: block; font-family: %(font)s; font-size: 32px; line-height: 1.4 }
+h1 { font-size: 96px; font-weight: 600; line-height: 1.1 }
+h2 { font-size: 64px; font-weight: 600; line-height: 1.15 }
+h3 { font-size: 44px; font-weight: 600; line-height: 1.2 }
+hr { border: none; border-top: 1px solid; color: inherit }
+x-shape { display: block }
+x-shape[kind=rounded] { border-radius: 24px }
 a { text-decoration: none; color: inherit }
 aside { display: none }
 """
@@ -429,9 +491,12 @@ def convert(deck_dir, outdir, slides=None, fonts=None, web_fonts=False,
             try:
                 page.goto(tmp.as_uri())
                 page.wait_for_load_state("networkidle")
-                items = page.evaluate(JS)
+                res = page.evaluate(JS)
             finally:
                 tmp.unlink()
+            items = res["items"]
+            if res["skipped"]:
+                log(f"{sid}: WARNING: not (exactly) converted: {', '.join(res['skipped'])}")
             if link_target:
                 for it in items:
                     it["svg"] = it["svg"].replace(

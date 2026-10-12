@@ -141,7 +141,9 @@ with the slide ``order``, and ``slides/<slide-id>.html`` holding one
 1920x1080 ``<section>`` of absolutely positioned boxes, text, inline
 ``<svg>`` and ``<x-connector>`` arrows.  Build steps are marked with
 ``data-build-in="fade N"`` / ``data-build-out="fade N"`` on the top-level
-elements.
+``position:absolute`` elements (without N: the next step).  Content which is
+not converted, or only approximately (e.g. images, icons, shadows), is
+reported with a WARNING.
 
 Each slide is laid out by headless Chromium and written as plain SVG: text
 stays ``<text>`` (editable in Inkscape, provided the fonts are installed), and

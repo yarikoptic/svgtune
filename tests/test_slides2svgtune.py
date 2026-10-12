@@ -280,3 +280,64 @@ def test_convert_static_elements(tmp_path):
     # the static title is in base; the intro leaves at "next", the rest stays
     assert _shown(out / 'st_tuned' / 'base.svg') == {'base', 'base~next'}
     assert _shown(out / 'st_tuned' / 'next.svg') == {'base', 'next'}
+
+
+# Parts of the Slides format: a slide background, per-side borders, % radii,
+# an ellipse, opacity, a connector in a (centered) host <div> with only a start
+# head, a connector without coordinates, tag defaults, a build without an order,
+# and a step whose content cannot be converted.
+FORMAT = """\
+<section style="background:#ffffff; font-family:sans-serif">
+  <div style="position:absolute; top:200px; left:20px; width:300px; height:80px; border-left:8px solid #ff0000; border-radius:12px"></div>
+  <div style="position:absolute; top:300px; left:20px; width:300px; height:100px; opacity:0.25; background:#0000ff; border-radius:50%"></div>
+  <x-shape kind="ellipse" style="position:absolute; top:420px; left:20px; width:200px; height:80px; background:#00ff00"></x-shape>
+  <div style="position:absolute; top:500px; left:700px; width:400px; height:200px; transform:translateX(-50%)">
+    <x-connector x1="0" y1="50%" x2="100%" y2="50%" head="none" head-start="filled" style="color:#00aa00"></x-connector>
+  </div>
+  <x-connector data-build-in="fade" style="height:32px"></x-connector>
+  <svg filter="url(#f)" width="10" height="10" style="position:absolute; top:900px; left:900px"><filter id="f"><feGaussianBlur stdDeviation="1"/></filter><rect width="10" height="10"/></svg>
+  <h1 style="position:absolute; top:20px; left:600px; width:800px">Heading</h1>
+  <p id="one--x" data-build-in="fade 1" style="position:absolute; top:80px; left:400px">One</p>
+  <x-icon id="icon--x" data-build-in="fade 2" name="Star" style="position:absolute; top:800px; left:20px; width:50px; height:50px"></x-icon>
+  <p id="later--x" data-build-in="rise" style="position:absolute; top:80px; left:1000px">Later</p>
+</section>
+"""
+
+
+@needs_chromium
+def test_convert_slides_format(tmp_path):
+    d = tmp_path / 'deck'
+    (d / 'slides').mkdir(parents=True)
+    (d / 'deck.json').write_text(json.dumps({"order": ["fmt"]}))
+    (d / 'slides' / 'fmt.html').write_text(FORMAT)
+    out = tmp_path / 'out'
+    msgs = []
+    s2s.convert(d, out, log=msgs.append)
+    warnings = ' '.join(msgs)
+    assert '<x-icon>' in warnings and 'without x1' in warnings
+    assert 'filter' not in warnings          # kept on the inline <svg>
+    tune = (out / 'fmt.svgtune').read_text()
+    # the icon's step is kept, and "rise" without an order comes after it
+    assert [l.split()[1] for l in tune.splitlines() if l.startswith('%save')] \
+        == ['base', 'one', 'icon', 'later']
+    doc = etree.parse(str(out / 'fmt.svg')).getroot()
+    q = lambda xp: doc.xpath(xp, namespaces={'s': SVG_NS})
+    # the slide background is the first thing painted
+    first = q('//s:g/*')[0]
+    assert (first.tag, first.get('width'), first.get('fill')) == (
+        '{%s}rect' % SVG_NS, '1920', 'rgb(255,255,255)')
+    # the left border as a ring following the rounded corners
+    assert q('//s:path[@fill-rule="evenodd" and @fill="rgb(255,0,0)"]')
+    # a 50% radius is a pill in the Slides format, here under the opacity;
+    # an ellipse shape is an ellipse
+    assert q('//s:g[@opacity="0.25"]/s:rect[@rx="50" and not(@ry)]')
+    assert q('//s:rect[@fill="rgb(0,255,0)" and @rx="100" and @ry="40"]')
+    # the connector is placed in its host (at 700 before the host's translate
+    # by -200, applied once), with only a head at its start
+    host = q('//s:g[contains(@transform, "-200, 0)")]')
+    assert len(host) == 1
+    assert host[0].xpath('.//s:polyline[contains(@points, " 1100,600")]', namespaces={'s': SVG_NS})
+    heads = host[0].xpath('.//s:path[@fill="rgb(0, 170, 0)"]', namespaces={'s': SVG_NS})
+    assert len(heads) == 1 and heads[0].get('d').startswith('M700,600 ')
+    # an <h1> without a size gets the format's default
+    assert q('//s:text[text()="Heading" and @font-size="96px" and @font-weight="600"]')

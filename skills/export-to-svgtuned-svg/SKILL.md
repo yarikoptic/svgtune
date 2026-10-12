@@ -54,12 +54,13 @@ The converter prints the steps of each slide, e.g. `base participants nwb ... st
 - Render every `out/<slide>_tuned/*.svg` with Playwright (open the file, take a screenshot) and combine them into a contact sheet in step order, the order of the `%save` lines. Look at it: each step should add exactly what the deck's click adds, and elements with `data-build-out` should disappear on their step.
 - Count links: `grep -o '<a ' out/<slide>.svg | wc -l` should match the slide's `<a href>` count.
 - Garbled or overlapping text almost always means fonts are missing in the renderer, not a conversion bug.
+- Read the converter's `WARNING: not (exactly) converted:` lines, and tell the user what is missing or approximated (e.g. images, icons, shadows).
 
 Deliver `out/` as a zip (SVGs, `.svgtune`, `_tuned/`). Mention that the same fonts must be installed to view or edit the SVGs.
 
 ## 5. Naming steps (when making or editing slides)
 
-Build steps are `data-build-in="fade N"` / `data-build-out="fade N"` on a slide's top-level elements. To get stable output names:
+Build steps are `data-build-in="fade N"` / `data-build-out="fade N"` on a slide's top-level `position:absolute` elements (without `N`: the next step). To get stable output names:
 
 - Give **one** element of each build step an id `<step>--<part>`, e.g. `id="hed--chip"`. Other elements of the same step inherit the name. Step names: short, lowercase, `[a-z0-9-]`, a different one for each step (a name reused for another step is an error).
 - Elements without `data-build-in` form the `base` layer, whatever their id.
