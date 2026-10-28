@@ -1,4 +1,4 @@
-Format-Specification: http://svn.debian.org/wsvn/dep/web/deps/dep5.mdwn?op=file&rev=135
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Name: svgtune
 Maintainer: Yaroslav Halchenko <debian@onerussian.com>
 Upstream-Source-Location: http://github.com/yarikoptic/svgtune
